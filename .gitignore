@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.pytest-*/
+
+# Runtime state (threads, checkpoints, memory, sandbox scratch).
+.my_assistant/
+/sandbox/
+/logs/
+/benchmarks/results/
+
+# Secrets and machine-local runtime config.
+.env
+.env.*
+!.env.example
+extensions_config.json
+
+# Personal notes and application materials.
+/agent面试题.md
+/个人助手业务改进方案.md
+/简历项目描述.md
+/面试题问答-基于本项目.md

@@ -1,0 +1,15 @@
+### Terminal Workbench / TUI (`packages/harness/my_assistant/tui/`)
+
+A terminal-native UI over the embedded harness, exposed as the `my_assistant` console script (`[project.scripts]` in `packages/harness/pyproject.toml`). It is a UI shell over `MyAssistantClient` and does **not** fork agent behavior. `textual` is an optional dependency (`my_assistant-harness[tui]`; also in the backend dev group); the console script degrades to headless help when it is absent. Full guide: [docs/TUI.md](../../../../docs/TUI.md).
+
+**Module layout** (all layers except `app.py` are pure / Textual-free and unit-tested directly):
+- `cli.py` — `plan_launch()` (pure launch-mode decision) + headless `--print` / `--json` + `main()` entry point. TTY → TUI, else headless help. `--tui-transparent` / `MY_ASSISTANT_TUI_TRANSPARENT` opt into terminal-default backgrounds without changing the solid-theme default. Uses an **absolute** `from my_assistant.tui.app import run_tui` so the `app.py` module name doesn't trip `test_harness_boundary.py` (which records relative import module names verbatim).
+- `view_state.py` — `ViewState` + `reduce(state, action)`, the testable heart. Rows: user / assistant / tool / system. Title captured from `values` events.
+- `runtime.py` — `translate(StreamEvent) -> [Action]` (pure) + `stream_actions()` which brackets a run with `RunStarted`/`RunEnded` and turns model errors into an `AssistantError` row.
+- `message_format.py` / `command_registry.py` / `input_history.py` / `render.py` / `theme.py` — pure helpers (tool summaries, slash registry + `resolve()`, ↑/↓ history, Rich renderers). The command registry must exclude the shared `RESERVED_SLASH_SKILL_NAMES` from both its picker and resolver so the TUI cannot advertise a skill activation that the agent runtime rejects.
+- `app.py` — Textual `App`. Runs `MyAssistantClient.stream()` (sync) on a worker thread and marshals actions to the UI thread via `call_from_thread`. Slash palette with `/goal` management + model/thread modal pickers; routes idle display-only `/clear` through `ClearRows` without replacing the active thread, and blocks state-resetting local commands like `/new` and `/clear` with the standard "Still working" message during an active run; priority key bindings gated by `check_action` so they never steal keys from overlays or the composer. Application-level PageUp/PageDown bindings scroll the transcript while preserving composer focus; streaming follows output only while the transcript remains at the bottom.
+- `session.py` / `persistence.py` — builds the client + checkpointer and the `ThreadMetaWriter`.
+
+**Session persistence**: `persistence.py` writes TUI session metadata to the `threads_meta` SQL table and checkpoints retain conversation state. Metadata writes are best-effort and are a no-op on the `memory` database backend. All DB work runs on one long-lived background event loop (a SQLAlchemy async engine is bound to its creating loop).
+
+**Tests**: `tests/test_tui_*.py` — pure layers via plain pytest, the app/palette/overlays via Textual's pilot harness with a fake in-process session, and `test_tui_persistence.py` for the `threads_meta` round-trip.

@@ -1,0 +1,62 @@
+# my_assistant — pure backend MyAssistant agent.
+#
+# This workspace contains the MyAssistant Agent Harness and its public
+# extension contract package.
+#
+# Entry points provided by the harness:
+#   my_assistant            -> terminal workbench (TUI)
+#   my_assistant --print …  -> headless one-shot
+#   my_assistant.client.MyAssistantClient -> embedded Python client
+
+[project]
+name = "my_assistant"
+version = "0.1.0"
+description = "MyAssistant local agent harness and terminal workbench"
+requires-python = ">=3.12"
+dependencies = [
+    "my_assistant-harness",
+]
+
+[project.optional-dependencies]
+# Pass-throughs for the harness extras, so `uv sync --extra postgres` works
+# from this root the same way it does in the monorepo.
+postgres = ["my_assistant-harness[postgres]"]
+redis = ["my_assistant-harness[redis]"]
+browser = ["my_assistant-harness[browser]"]
+monocle = ["my_assistant-harness[monocle]"]
+ollama = ["my_assistant-harness[ollama]"]
+memory-zh = ["my_assistant-harness[memory-zh]"]
+
+[dependency-groups]
+# Managed extension packages are added here by `my_assistant extensions install`.
+extensions = []
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "ruff>=0.14.11",
+    # TUI runtime dep (also the my_assistant-harness[tui] extra); kept in the dev
+    # group so the terminal workbench can be run locally.
+    "textual>=0.80",
+]
+
+[tool.uv]
+index-url = "https://pypi.org/simple"
+default-groups = ["dev", "extensions"]
+# Carried over from the monorepo: langgraph-sdk pins websockets<16, which would
+# silently downgrade websockets 16.0. Keep the override so the resolved set
+# matches the upstream lock.
+override-dependencies = ["websockets==16.0"]
+# The harness ships a monkey-patch for LangGraph's InMemorySaver delta-history
+# that is validated against one exact version
+# (`my_assistant/checkpoint_patches.py::_PATCH_VALIDATED_LANGGRAPH_VERSION`).
+# A fresh resolve would happily pick a newer 1.2.x and log a warning at import
+# time, so pin the version the upstream monorepo locks. Revisit together with
+# that constant when upgrading LangGraph.
+constraint-dependencies = ["langgraph==1.2.9"]
+
+[tool.uv.workspace]
+members = ["packages/harness", "packages/extension-api"]
+
+[tool.uv.sources]
+my_assistant-harness = { workspace = true }
+my_assistant-extension-api = { workspace = true }

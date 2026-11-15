@@ -1,0 +1,15 @@
+[project]
+name = "my_assistant-extension-api"
+version = "0.3.0"
+description = "Public contracts for MyAssistant extensions"
+requires-python = ">=3.12"
+# Keep the contract package import-light and independent from the host. Public
+# values are stdlib-based; concrete middleware types are validated by MyAssistant.
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["my_assistant_extension_api"]
