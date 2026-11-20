@@ -139,12 +139,6 @@ max_recursion_limit: 1000
 # all models. Mixed currencies disable cost reporting to prevent invalid sums.
 # Prices are per one million tokens.
 #
-#   pricing:
-#     currency: CNY                    # ISO code shown in the console (CNY, USD, ...)
-#     input_per_million: 8.0           # price per 1M input tokens (cache miss)
-#     output_per_million: 32.0         # price per 1M output tokens
-#     input_cache_hit_per_million: 0.8 # price per 1M cache-hit input tokens
-#                                      # (optional; omit → hits billed at miss price)
 
 models:
   - name: deepseek-flash
@@ -159,106 +153,6 @@ models:
     supports_thinking: true
     supports_reasoning_effort: true
     supports_vision: true
-
-  # Example: Volcengine (Doubao) model
-  # - name: doubao-seed-1.8
-  #   display_name: Doubao-Seed-1.8
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: doubao-seed-1-8-251228
-  #   api_base: https://ark.cn-beijing.volces.com/api/v3
-  #   api_key: $VOLCENGINE_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   context_window: 262144     # Total prompt + completion capacity
-  #   supports_thinking: true
-  #   supports_vision: true
-  #   supports_reasoning_effort: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: Volcengine Coding Plan (one key, multi-vendor gateway)
-  # The Coding Plan endpoint (/api/coding/v3) lets you access models from
-  # Doubao, GLM, DeepSeek, Kimi, and MiniMax with a single API key.
-  # Each model may differ in thinking/vision support - configure per-model.
-  #
-  # - name: glm-5.2-cp
-  #   display_name: GLM-5.2 (Coding Plan)
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: glm-5.2
-  #   api_base: https://ark.cn-beijing.volces.com/api/coding/v3
-  #   api_key: $VOLCENGINE_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   supports_thinking: true
-  #   supports_vision: false
-  #   supports_reasoning_effort: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-  #
-  # - name: deepseek-v4-pro-cp
-  #   display_name: DeepSeek-V4-Pro (Coding Plan)
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: deepseek-v4-pro
-  #   api_base: https://ark.cn-beijing.volces.com/api/coding/v3
-  #   api_key: $VOLCENGINE_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   supports_thinking: true
-  #   supports_vision: false
-  #   supports_reasoning_effort: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: Z.AI GLM-5.3-Flash (required-thinking workaround)
-  #
-  # GLM-5.3-Flash cannot disable thinking and only accepts low/high/max effort.
-  # MyAssistant's current generic UI may request disabled thinking or emit
-  # minimal/medium, so this profile keeps thinking enabled unconditionally and
-  # suppresses generic effort forwarding. Keep the thinking block in the base
-  # extra_body: moving it to when_thinking_enabled would let background calls
-  # synthesize the invalid thinking.type=disabled + reasoning_effort=minimal pair.
-  # clear_thinking=true is intentional for this compatibility workaround: it
-  # avoids requiring exact historical reasoning replay after summarization.
-  #
-  # - name: glm-5.3-flash
-  #   display_name: GLM-5.3-Flash
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: glm-5.3-flash
-  #   api_base: https://api.z.ai/api/paas/v4
-  #   api_key: $ZAI_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   temperature: 1.0
-  #   top_p: 0.95
-  #   max_tokens: 131072
-  #   context_window: 1000000
-  #   supports_thinking: true
-  #   supports_reasoning_effort: false
-  #   supports_vision: true
-  #   stream_usage: false
-  #   extra_body:
-  #     thinking:
-  #       type: enabled
-  #       clear_thinking: true
-  #     tool_stream: true
 
   # Example: OpenAI model
   # - name: gpt-4
@@ -292,43 +186,6 @@ models:
   #   context_window: 400000
   #   supports_vision: true
 
-  # Example: Ollama (native provider — preserves thinking/reasoning content)
-  #
-  # IMPORTANT: Use langchain_ollama:ChatOllama instead of langchain_openai:ChatOpenAI
-  # for Ollama models. The OpenAI-compatible endpoint (/v1/chat/completions) does NOT
-  # return reasoning_content as a separate field — thinking content is either flattened
-  # into <think> tags or dropped entirely (ollama/ollama#15293). The native Ollama API
-  # (/api/chat) correctly separates thinking from response content.
-  #
-  # Install: cd backend && uv pip install 'my_assistant-harness[ollama]'
-  #
-  # - name: qwen3-local
-  #   display_name: Qwen3 32B (Ollama)
-  #   use: langchain_ollama:ChatOllama
-  #   model: qwen3:32b
-  #   base_url: http://localhost:11434   # No /v1 suffix — uses native /api/chat
-  #   num_predict: 8192
-  #   temperature: 0.7
-  #   reasoning: true                    # Passes think:true to Ollama native API
-  #   context_window: 32768              # Match the context length served by Ollama
-  #   supports_thinking: true
-  #   supports_vision: false
-  #
-  # - name: gemma4-local
-  #   display_name: Gemma 4 27B (Ollama)
-  #   use: langchain_ollama:ChatOllama
-  #   model: gemma4:27b
-  #   base_url: http://localhost:11434
-  #   num_predict: 8192
-  #   temperature: 0.7
-  #   reasoning: true
-  #   context_window: 32768
-  #   supports_thinking: true
-  #   supports_vision: true
-  #
-  # For Docker deployments, use host.docker.internal instead of localhost:
-  #   base_url: http://host.docker.internal:11434
-
   # Example: Anthropic Claude model (with extended thinking)
   # supports_thinking: true is required — without it, MyAssistant silently falls
   # back to non-thinking mode even when the UI thinking toggle is on.
@@ -352,393 +209,6 @@ models:
   #   when_thinking_disabled:
   #     thinking:
   #       type: disabled
-
-  # Example: Google Gemini model (native SDK, no thinking support)
-  # - name: gemini-2.5-pro
-  #   display_name: Gemini 2.5 Pro
-  #   use: langchain_google_genai:ChatGoogleGenerativeAI
-  #   model: gemini-2.5-pro
-  #   gemini_api_key: $GEMINI_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   context_window: 1048576
-  #   supports_vision: true
-
-  # Example: Gemini model via OpenAI-compatible gateway (with thinking support)
-  # Use PatchedChatOpenAI so that tool-call thought_signature values on tool_calls
-  # are preserved across multi-turn tool-call conversations — required by the
-  # Gemini API when thinking is enabled. See:
-  # https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures
-  # - name: gemini-2.5-pro-thinking
-  #   display_name: Gemini 2.5 Pro (Thinking)
-  #   use: my_assistant.models.patched_openai:PatchedChatOpenAI
-  #   model: google/gemini-2.5-pro-preview   # model name as expected by your gateway
-  #   api_key: $GEMINI_API_KEY
-  #   base_url: https://<your-openai-compat-gateway>/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 16384
-  #   context_window: 1048576
-  #   supports_thinking: true
-  #   supports_vision: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: Xiaomi MiMo model (with thinking support)
-  # MiMo thinking mode returns reasoning_content and requires that field to be
-  # replayed on historical assistant messages in multi-turn agent/tool-call
-  # conversations. Use PatchedChatMiMo instead of plain ChatOpenAI.
-  # Use https://api.xiaomimimo.com/v1 with pay-as-you-go `sk-...` keys.
-  # Use your Token Plan regional URL (for example
-  # https://token-plan-cn.xiaomimimo.com/v1) with Token Plan `tp-...` keys.
-  # PatchedChatMiMo is model-id agnostic; use it for every MiMo thinking model
-  # entry you configure (for example mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro,
-  # mimo-v2-omni, or mimo-v2-flash), including models referenced by subagent
-  # model overrides.
-  # See: https://platform.xiaomimimo.com/docs/en-US/usage-guide/passing-back-reasoning_content
-  # - name: mimo-v2.5-pro
-  #   display_name: MiMo V2.5 Pro
-  #   use: my_assistant.models.patched_mimo:PatchedChatMiMo
-  #   model: mimo-v2.5-pro
-  #   api_key: $MIMO_API_KEY
-  #   base_url: https://api.xiaomimimo.com/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   supports_thinking: true
-  #   supports_vision: false
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: DeepSeek V4 model (with thinking support)
-  # - name: deepseek-v4
-  #   display_name: DeepSeek V4 (Thinking)
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: deepseek-v4-pro
-  #   api_key: $DEEPSEEK_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   supports_thinking: true
-  #   supports_vision: false  # DeepSeek V4 does not support vision
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: Kimi K2.5 model
-  # - name: kimi-k2.5
-  #   display_name: Kimi K2.5
-  #   use: my_assistant.models.patched_deepseek:PatchedChatDeepSeek
-  #   model: kimi-k2.5
-  #   api_base: https://api.moonshot.cn/v1
-  #   api_key: $MOONSHOT_API_KEY
-  #   timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 32768
-  #   supports_thinking: true
-  #   supports_vision: true  # Check your specific model's capabilities
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: Novita AI (OpenAI-compatible)
-  # Novita provides an OpenAI-compatible API with competitive pricing
-  # See: https://novita.ai
-  # - name: novita-deepseek-v3.2
-  #   display_name: Novita DeepSeek V3.2
-  #   use: langchain_openai:ChatOpenAI
-  #   model: deepseek/deepseek-v3.2
-  #   api_key: $NOVITA_API_KEY
-  #   base_url: https://api.novita.ai/openai
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 0.7
-  #   supports_thinking: true
-  #   supports_vision: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: StepFun (阶跃星辰) reasoning models
-  # StepFun provides OpenAI-compatible API with reasoning models.
-  # With reasoning_format: deepseek-style, the API returns reasoning_content
-  # (same field as DeepSeek), which must be replayed on historical assistant
-  # messages in multi-turn tool-call conversations.
-  # Use PatchedChatStepFun instead of plain ChatOpenAI.
-  # Docs: https://platform.stepfun.com/docs/api-reference/chat-completions
-  # - name: step-3.7-flash
-  #   display_name: Step 3.7 Flash
-  #   use: my_assistant.models.patched_stepfun:PatchedChatStepFun
-  #   model: step-3.7-flash
-  #   api_key: $STEPFUN_API_KEY
-  #   base_url: https://api.stepfun.com/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   supports_thinking: true
-  #   supports_reasoning_effort: true
-  #   supports_vision: true
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       reasoning_format: deepseek-style
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       reasoning_format: deepseek-style
-
-  # Example: MiniMax (OpenAI-compatible) - International Edition
-  # MiniMax provides high-performance models with 512K context window and 128K max output
-  # Docs: https://platform.minimax.io/docs/api-reference/text-openai-api
-  # - name: minimax-m3
-  #   display_name: MiniMax M3
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M3
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimax.io/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: true
-  #   supports_thinking: true
-  #   # PatchedChatMiniMax is the MiniMax adapter: it enables reasoning_split and
-  #   # maps MiniMax's structured reasoning into reasoning_content (the field
-  #   # MyAssistant understands), and it strips the per-message `name` field that
-  #   # MyAssistant middlewares attach — MiniMax rejects requests whose user-message
-  #   # names differ with "user name must be consistent (2013)". Declare the
-  #   # thinking toggle so non-thinking paths (flash mode, follow-up suggestions,
-  #   # title/memory generation) truly disable reasoning instead of spending
-  #   # tokens on it.
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: adaptive
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # NOTE: M2.x models always think — passing thinking:{type:disabled} has no
-  # effect (per MiniMax docs), so the toggle above is omitted for M2.7. The
-  # follow-up-suggestions endpoint strips inline <think> defensively regardless.
-  # Still use the PatchedChatMiniMax adapter: it strips the per-message `name`
-  # field MyAssistant middlewares attach, which MiniMax otherwise rejects with
-  # "user name must be consistent (2013)".
-  # - name: minimax-m2.7
-  #   display_name: MiniMax M2.7
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M2.7
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimax.io/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: false  # M2.7 is text-only; M3 supports vision
-  #   supports_thinking: true
-
-  # - name: minimax-m2.7-highspeed
-  #   display_name: MiniMax M2.7 Highspeed
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M2.7-highspeed
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimax.io/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: false  # M2.7 is text-only; M3 supports vision
-  #   supports_thinking: true
-
-  # Example: MiniMax (OpenAI-compatible) - CN 中国区用户
-  # MiniMax provides high-performance models with 512K context window and 128K max output
-  # Docs: https://platform.minimaxi.com/docs/api-reference/text-openai-api
-  # - name: minimax-m3
-  #   display_name: MiniMax M3
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M3
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimaxi.com/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: true
-  #   supports_thinking: true
-  #   # PatchedChatMiniMax is the MiniMax adapter: it enables reasoning_split and
-  #   # maps MiniMax's structured reasoning into reasoning_content (the field
-  #   # MyAssistant understands), and it strips the per-message `name` field that
-  #   # MyAssistant middlewares attach — MiniMax rejects requests whose user-message
-  #   # names differ with "user name must be consistent (2013)". Declare the
-  #   # thinking toggle so non-thinking paths (flash mode, follow-up suggestions,
-  #   # title/memory generation) truly disable reasoning instead of spending
-  #   # tokens on it.
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: adaptive
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # NOTE: M2.x models always think — passing thinking:{type:disabled} has no
-  # effect (per MiniMax docs), so the toggle above is omitted for M2.7. The
-  # follow-up-suggestions endpoint strips inline <think> defensively regardless.
-  # Still use the PatchedChatMiniMax adapter: it strips the per-message `name`
-  # field MyAssistant middlewares attach, which MiniMax otherwise rejects with
-  # "user name must be consistent (2013)".
-  # - name: minimax-m2.7
-  #   display_name: MiniMax M2.7
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M2.7
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimaxi.com/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: false  # M2.7 is text-only; M3 supports vision
-  #   supports_thinking: true
-
-  # - name: minimax-m2.7-highspeed
-  #   display_name: MiniMax M2.7 Highspeed
-  #   use: my_assistant.models.patched_minimax:PatchedChatMiniMax
-  #   model: MiniMax-M2.7-highspeed
-  #   api_key: $MINIMAX_API_KEY
-  #   base_url: https://api.minimaxi.com/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 4096
-  #   temperature: 1.0  # MiniMax requires temperature in (0.0, 1.0]
-  #   supports_vision: false  # M2.7 is text-only; M3 supports vision
-  #   supports_thinking: true
-
-  # Example: OpenRouter (OpenAI-compatible)
-  # OpenRouter models use the same ChatOpenAI + base_url pattern as other OpenAI-compatible gateways.
-  # - name: openrouter-gemini-2.5-flash
-  #   display_name: Gemini 2.5 Flash (OpenRouter)
-  #   use: langchain_openai:ChatOpenAI
-  #   model: google/gemini-2.5-flash-preview
-  #   api_key: $OPENAI_API_KEY
-  #   base_url: https://openrouter.ai/api/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   temperature: 0.7
-
-  # Example: Atlas Cloud (OpenAI-compatible)
-  # Atlas Cloud exposes a single OpenAI-compatible endpoint in front of many open
-  # models (DeepSeek, Qwen, Kimi, GLM, MiniMax, Llama, ...), so it uses the same
-  # ChatOpenAI + base_url pattern as other OpenAI-compatible gateways.
-  # Browse model ids at https://api.atlascloud.ai/v1/models — see https://atlascloud.ai
-  # - name: atlascloud-deepseek-v3.2
-  #   display_name: DeepSeek V3.2 (Atlas Cloud)
-  #   use: langchain_openai:ChatOpenAI
-  #   model: deepseek-ai/DeepSeek-V3.2-Exp
-  #   api_key: $ATLASCLOUD_API_KEY
-  #   base_url: https://api.atlascloud.ai/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   temperature: 0.7
-  #   supports_vision: false
-  #
-  # For reasoning models on Atlas Cloud (e.g. a Qwen3 *-thinking id), use the
-  # patched OpenAI-compatible adapter so reasoning_content is replayed across
-  # multi-turn tool-call conversations:
-  # - name: atlascloud-qwen3-thinking
-  #   display_name: Qwen3 235B Thinking (Atlas Cloud)
-  #   use: my_assistant.models.patched_openai:PatchedChatOpenAI
-  #   model: qwen/qwen3-235b-a22b-thinking-2507
-  #   api_key: $ATLASCLOUD_API_KEY
-  #   base_url: https://api.atlascloud.ai/v1
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   supports_thinking: true
-  #   supports_vision: false
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       thinking:
-  #         type: enabled
-  #   when_thinking_disabled:
-  #     extra_body:
-  #       thinking:
-  #         type: disabled
-
-  # Example: vLLM 0.19.0 (OpenAI-compatible, with reasoning toggle)
-  # MyAssistant's vLLM provider preserves vLLM reasoning across tool-call turns and
-  # toggles Qwen-style reasoning by writing
-  # extra_body.chat_template_kwargs.enable_thinking=true/false.
-  # Some reasoning models also require the server to be started with
-  # `vllm serve ... --reasoning-parser <parser>`.
-  # - name: qwen3-32b-vllm
-  #   display_name: Qwen3 32B (vLLM)
-  #   use: my_assistant.models.vllm_provider:VllmChatModel
-  #   model: Qwen/Qwen3-32B
-  #   api_key: $VLLM_API_KEY
-  #   base_url: http://localhost:8000/v1
-  #   # Enable only when the endpoint reports cumulative usage on every stream chunk.
-  #   cumulative_stream_usage: true
-  #   request_timeout: 600.0
-  #   max_retries: 2
-  #   max_tokens: 8192
-  #   supports_thinking: true
-  #   supports_vision: false
-  #   when_thinking_enabled:
-  #     extra_body:
-  #       chat_template_kwargs:
-  #         enable_thinking: true
-
-
-  # Example: Qwen3-Coder deployed on MindIE Engine
-  # - name: Qwen3_Coder_480B_MindIE
-  #   display_name: Qwen3-Coder-480B (MindIE)
-  #   use: my_assistant.models.mindie_provider:MindIEChatModel
-  #   model: Qwen3-Coder-480B-A35B-Instruct-Client
-  #   base_url: http://localhost:8989/v1
-  #   api_key: $OPENAI_API_KEY
-  #   temperature: 0
-  #   max_retries: 1
-  #   supports_thinking: false
-  #   supports_vision: false
-  #   supports_reasoning_effort: false
-  #   # --- Advanced Network Settings ---
-  #   # Due to MindIE's streaming limitations with tool calling, the provider
-  #   # uses mock-streaming (awaiting full generation). Extended timeouts are required.
-  #   read_timeout: 900.0     # 15 minutes to prevent drops during long document generation
-  #   connect_timeout: 30.0
-  #   write_timeout: 60.0
-  #   pool_timeout: 30.0
 
 # ============================================================================
 # Tool Groups Configuration
@@ -1436,18 +906,13 @@ uploads:
   pdf_converter: auto
 
 sandbox:
-  use: my_assistant.sandbox.local:LocalSandboxProvider
-  # Host bash remains disabled because LocalSandboxProvider is not a secure
-  # isolation boundary for shell access. Use the configured AIO provider for
-  # containerized shell once transactional writes are enabled there too.
+  use: my_assistant.community.aio_sandbox:AioSandboxProvider
+  image: enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:1.11.0
+  isolate_workspace: true
   allow_host_bash: false
-  # Optional: Mount additional host directories into the sandbox.
-  # Each mount maps a host path to a virtual container path accessible by the agent.
-  # LocalSandboxProvider resolves host paths from the process that runs MyAssistant.
-  # mounts:
-  #   - host_path: /home/user/my-project    # Absolute path; see note above for Docker mode
-  #     container_path: /mnt/my-project     # Virtual path inside the sandbox
-  #     read_only: true                     # Whether the mount is read-only (default: false)
+  network:
+    mode: isolated
+    proxy_image: python:3.12-slim
 
   # Tool output truncation limits (characters).
   # bash uses middle-truncation (head + tail) since errors can appear anywhere in the output.
@@ -1459,13 +924,7 @@ sandbox:
   read_file_output_max_chars: 50000
   ls_output_max_chars: 20000
 
-  # Maximum wall-clock seconds a single host bash command may run before it is
-  # terminated (process group and all). A blocking foreground command — e.g. a
-  # server started without backgrounding — is killed after this long so the
-  # agent's turn cannot hang. Start long-lived processes in the background with
-  # output redirected (e.g. `your-command > /tmp/server.log 2>&1 &`) when you
-  # need logs; unredirected background output is drained with bounded capture
-  # and excess output is discarded.
+  # A timed-out command stops its Docker sandbox, including child processes.
   bash_command_timeout: 600
 
 # Option 2: Container-based AIO Sandbox
@@ -1564,16 +1023,8 @@ sandbox:
 #   # Single application instance? Leave this out; `memory` is the default and the
 #   # cross-instance kill cannot happen.
 #   #
-#   # Multiple application instances sharing one container backend
-#   # (load-balanced deployments, Docker Compose) MUST set type: redis. Docker
-#   # Compose already sets MY_ASSISTANT_STREAM_BRIDGE_REDIS_URL, which is taken as
-#   # proof the deployment is multi-instance, so redis ownership is inferred even
-#   # if this section is omitted.
-#   #
-#   # The redis ownership store requires the optional `redis` extra. It is
-#   # auto-detected from this section on `make dev` and always installed in the
-#   # Docker image. To install it manually:
-#   #     cd backend && uv sync --all-packages --extra redis
+#   # Multiple application instances sharing one container backend must use Redis
+#   # ownership. Install the optional driver with `uv sync --extra redis`.
 #   #
 #   # ownership:
 #   #   type: memory                 # single application instance only
@@ -1631,7 +1082,7 @@ sandbox:
 #   # environment:
 #   #   PYTHONUNBUFFERED: "1"
 #
-# Option 4: Provisioner-managed AIO Sandbox (docker-compose-dev)
+# Option 4: Provisioner-managed AIO Sandbox
 # Each sandbox_id gets a dedicated Pod in k3s, managed by the provisioner.
 # Recommended for production or advanced users who want better isolation and scalability.:
 # sandbox:
@@ -2236,24 +1687,7 @@ skill_evolution:
 # Postgres mode: put your connection URL in .env as DATABASE_URL,
 # then reference it here with $DATABASE_URL.
 #
-# Install the driver — Issue #2754 fix lands `UV_EXTRAS` in every code path:
-#   Local      `make dev` auto-detects from `database.backend: postgres` below
-#              and passes `--extra postgres` to `uv sync` on every restart, so
-#              the extra is no longer wiped. To opt in explicitly (or layer
-#              extras like `postgres,ollama`), set in project-root .env:
-#                  UV_EXTRAS=postgres
-#   Docker dev `make docker-start` reads `UV_EXTRAS` from project-root .env via
-#              `env_file`. Set:
-#                  UV_EXTRAS=postgres
-#              Multiple extras (`postgres,ollama`) supported here too — see
-#              docker/dev-entrypoint.sh.
-#   Docker img build-arg `UV_EXTRAS=postgres,discord docker compose build`
-#              supports comma- or whitespace-separated extras at build time
-#              (backend/Dockerfile expands them to repeated `--extra` flags).
-#
-# First-time bootstrap (before `make dev`):
-#   cd backend && uv sync --all-packages --extra postgres
-#   (--all-packages propagates the extra into workspace members — see PR #2584)
+# Install the PostgreSQL driver from the project root with `uv sync --extra postgres`.
 #
 # NOTE: When both `checkpointer` and `database` are configured,
 # `checkpointer` takes precedence for the LangGraph checkpointer and Store;
@@ -2386,50 +1820,6 @@ agent_storage:
   backend: file
 
 # ============================================================================
-# Stream Bridge Configuration
-# ============================================================================
-# The stream bridge carries live agent events between application processes
-# clients. Docker Compose sets MY_ASSISTANT_STREAM_BRIDGE_REDIS_URL automatically,
-# so Docker deployments use Redis Streams even if this section is omitted.
-#
-# The redis bridge requires the optional `redis` extra. It is auto-detected from
-# this section on `make dev`, and always installed in the Docker image. To install
-# it manually: cd backend && uv sync --all-packages --extra redis
-#
-# stream_bridge:
-#   type: memory                 # single-process only
-#   queue_maxsize: 256           # data events retained per run (min: 1). A reconnect
-#                                # older than this window receives SSE `gap`.
-#   heartbeat_interval_seconds: 15  # idle interval (max: 86400) between
-#                                   # heartbeats sent to SSE, wait, and internal
-#                                   # stream consumers.
-#
-# stream_bridge:
-#   type: redis                  # recommended for multi-process deployments
-#   redis_url: redis://redis:6379/0
-#   queue_maxsize: 256           # data events retained per run (Redis MAXLEN, min: 1).
-#                                # Older valid cursors receive SSE `gap`.
-#   heartbeat_interval_seconds: 15  # idle interval (max: 86400) between
-#                                   # heartbeats sent to SSE, wait, and internal
-#                                   # stream consumers.
-#   stream_ttl_seconds: 86400    # rolling TTL for retained stream buffers.
-#                                # Refreshed on each publish/publish_end; set 0
-#                                # to disable. This is not a run timeout.
-#   recovered_stream_cleanup_delay_seconds: 60  # seconds to wait after
-#                                # publishing END for a recovered orphan run
-#                                # before deleting the stream key.
-#   max_connections: 100         # optional pool ceiling. Each live SSE client
-#                                # holds one connection blocked in XREAD ... BLOCK
-#                                # for up to the configured heartbeat interval, so
-#                                # hundreds of concurrent clients open hundreds of
-#                                # connections. Unset = redis-py default (unbounded).
-#
-# NOTE: the redis bridge is fail-hard in v1. Redis.from_url is lazy, so a down
-# Redis does not block process startup, but the first publish/xread raises. A
-# mid-run Redis outage fails the active run — there is no automatic retry/backoff
-# or fallback to the in-memory bridge. Run Redis with HA / a restart policy.
-
-# ============================================================================
 # ============================================================================
 # Guardrails Configuration
 # ============================================================================
@@ -2468,8 +1858,7 @@ agent_storage:
 # ============================================================================
 # Authorization Configuration
 # ============================================================================
-# Fine-grained resource authorization (RBAC and beyond). Disabled by default;
-# every authenticated user has access to all resources.
+# Optional role policies for tools, models, and sandbox access.
 # See RFC: https://github.com/bytedance/my-assistant/issues/4063
 #
 # authorization:
@@ -2480,27 +1869,15 @@ agent_storage:
 #     use: my_assistant.authz.rbac:RbacAuthorizationProvider
 #     config:
 #       # A known role with no policy for a resource is unrestricted for it.
-#       # Define both `tools` and `routes` wherever access should be constrained.
 #       roles:
 #         admin:
 #           tools: {allow: "*"}
-#           routes: {allow: "*"}
 #           models: {allow: "*"}
 #           sandbox: {allow: "*"}
 #         user:
 #           tools: {allow: "*", deny: ["update_agent"]}
-#           routes: {allow: "*"}
 #           models: {allow: "*"}
 #           sandbox: {allow: "*"}
-#         guest:
-#           # web-only role: sandbox-dependent tools (read_file, bash, glob,
-#           # grep, write_file, ...) are omitted — with sandbox:execute denied
-#           # they could only ever return the deny error, so allow just the
-#           # non-sandbox tools.
-#           tools: {allow: ["web_search"]}
-#           routes: {allow: ["threads:read", "runs:read"]}
-#           models: {allow: ["gpt-4o-mini"]}
-#           sandbox: {allow: false}  # deny sandbox execution
 authorization:
   enabled: false
 
@@ -2531,16 +1908,11 @@ authorization:
 # Capping concurrency caps that slope. Retries alone make it worse (they add
 # demand inside the very burst being throttled); pair this cap with the
 # decorrelated-jitter backoff already built into the LLM error-handling
-# middleware, and ideally an nginx `limit_req` at the ingress.
+# middleware.
 #
 # 0 disables the cap (default) - existing deployments see no behavior change.
 #
-# Per-process, not per-cluster: the cap bounds in-flight LLM calls within ONE
-# process. With multiple workers the aggregate cap across the
-# deployment is effectively `max_concurrent_calls * worker_count`, and a
-# multi-node rollout multiplies it further - size the per-process value with
-# that in mind (and pair it with an nginx `limit_req` at the ingress for a
-# true cluster-wide slope cap).
+# The cap applies to each process independently.
 #
 # Startup-only: the cap is captured at the first LLM run and frozen for the
 # process lifetime. Editing `max_concurrent_calls` here takes effect only after

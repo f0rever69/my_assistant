@@ -156,11 +156,12 @@ def _quote_fts_term(term: str) -> str:
 class WorkspaceFTSIndex:
     """Maintain a bounded, private FTS5 index for one Workspace root."""
 
-    def __init__(self, workspace: Workspace):
+    def __init__(self, workspace: Workspace, *, index_dir: Path | None = None):
         self.workspace = workspace
         # Workspace.resolve rejects existing symlinks/reparse points in the
         # private runtime path before the index directory is created.
-        index_dir = workspace.resolve(_INDEX_DIR)
+        if index_dir is None:
+            index_dir = workspace.resolve(_INDEX_DIR)
         if workspace.registry_managed:
             # A removed/re-registered root gets a new Workspace identity and
             # must never inherit the previous catalog's cached document text.
@@ -580,7 +581,21 @@ def workspace_search_tool(
     ]
     try:
         limit = max(1, min(int(max_results), _MAX_RESULTS))
-        hits, stats = WorkspaceFTSIndex(workspace).search(query, variants, limit)
+        from my_assistant.authz.sandbox_authz import safe_app_config
+
+        config = safe_app_config()
+        index_dir = None
+        if config is not None and config.sandbox.isolate_workspace:
+            from my_assistant.runtime.user_context import resolve_runtime_user_id
+            from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+
+            thread_id = context.get("thread_id")
+            if not thread_id:
+                raise ValueError("Workspace search requires a thread in Docker isolation mode")
+            copy = prepare_workspace_copy(workspace, thread_id, resolve_runtime_user_id(runtime))
+            index_dir = copy.parent / "index"
+            workspace = Workspace.from_path(copy)
+        hits, stats = WorkspaceFTSIndex(workspace, index_dir=index_dir).search(query, variants, limit)
     except (sqlite3.OperationalError, OSError, PermissionError, ValueError) as exc:
         return f"Workspace search failed: {type(exc).__name__}: {exc}"
 

@@ -11,6 +11,7 @@ from my_assistant.runtime.checkpoint_state import (
     build_state_mutation_graph,
     graph_state_schema,
 )
+from my_assistant.runtime.user_context import get_effective_user_id
 from my_assistant.utils.thread_id import validate_thread_id
 from my_assistant.workspaces import get_workspace_registry, state_binding
 
@@ -89,6 +90,29 @@ class WorkspaceClientMixin:
         from my_assistant.workspace_transfers import export_file
 
         return export_file(get_workspace_registry(), workspace, path)
+
+    def _docker_workspace(self, thread_id: str, workspace: dict) -> Workspace:
+        self.check_thread_workspace(thread_id, workspace=workspace)
+        binding = self.get_thread_workspace(thread_id)["workspace_binding"]
+        parsed = Workspace.from_context(workspace)
+        if parsed is None or binding is None or binding.get("workspace_id") != parsed.id:
+            raise PermissionError("Select the thread's Workspace before reviewing Docker changes")
+        return parsed
+
+    def diff_workspace_copy(self, thread_id: str, workspace: dict) -> list[dict[str, str]]:
+        from my_assistant.sandbox.workspace_copy import workspace_copy_diff
+
+        return workspace_copy_diff(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id())
+
+    def review_workspace_copy(self, thread_id: str, workspace: dict, path: str) -> dict[str, str]:
+        from my_assistant.sandbox.workspace_copy import review_workspace_copy
+
+        return review_workspace_copy(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path)
+
+    def apply_workspace_copy(self, thread_id: str, workspace: dict, path: str, sha256: str) -> str:
+        from my_assistant.sandbox.workspace_copy import apply_workspace_copy
+
+        return apply_workspace_copy(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path, sha256)
 
     def reference_workspace_export(self, thread_id, workspace, export_id):
         import json

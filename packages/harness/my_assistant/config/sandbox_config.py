@@ -175,6 +175,10 @@ class SandboxConfig(BaseModel):
         ...,
         description="Class path of the sandbox provider (e.g. my_assistant.sandbox.local:LocalSandboxProvider)",
     )
+    isolate_workspace: bool = Field(
+        default=False,
+        description="Use the local Docker isolation profile with a filtered Workspace copy and explicit write-back.",
+    )
     allow_host_bash: bool = Field(
         default=False,
         description="Allow the bash tool to execute directly on the host when using LocalSandboxProvider. Dangerous; intended only for fully trusted local environments.",

@@ -260,6 +260,11 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
               Local provider manages container lifecycle directly (start/stop).
         """
         provisioner_url = self._config.get("provisioner_url")
+        if self._config.get("isolate_workspace") and (
+            provisioner_url or self.sandbox_network_mode() != "isolated"
+            or self._config["mounts"]
+        ):
+            raise ValueError("Workspace isolation requires local Docker, network.mode=isolated, and empty sandbox mounts")
         if provisioner_url:
             if self.sandbox_network_mode() != "open":
                 raise RuntimeError("sandbox.network restricted modes are currently supported only by the local Docker AIO backend")
@@ -281,6 +286,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             environment=self._config["environment"],
             network_config=self._config["network"],
             required_shell_sessions=self._config.get("required_shell_sessions", 0),
+            isolate_workspace=self._config.get("isolate_workspace", False),
         )
 
     # ── Configuration ────────────────────────────────────────────────────
@@ -300,6 +306,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         if not isinstance(configured_skills_path, str):
             configured_skills_path = DEFAULT_SKILLS_CONTAINER_PATH
 
+        if sandbox_config.isolate_workspace and sandbox_config.environment:
+            raise ValueError("Workspace isolation requires an empty sandbox.environment")
         environment = self._resolve_env_vars(sandbox_config.environment or {})
         max_running_subagents = int(getattr(getattr(config, "subagent_runtime", None), "max_running", 3))
         required_shell_sessions = max_running_subagents + _SHELL_SESSION_HEADROOM
@@ -328,6 +336,8 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             "max_shell_sessions": max_shell_sessions,
             "required_shell_sessions": required_shell_sessions,
             "network": sandbox_config.network.model_dump(),
+            "isolate_workspace": sandbox_config.isolate_workspace,
+            "bash_command_timeout": sandbox_config.bash_command_timeout,
             "ownership": getattr(sandbox_config, "ownership", None),
             # A redis stream bridge means the deployment is multi-instance, which
             # is what the ownership store must default to. Read the same source
@@ -913,7 +923,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         skills_container_path = self._configured_skills_container_path()
 
         if thread_id:
-            mounts.extend(self._get_thread_mounts(thread_id, user_id=user_id))
+            if self._config.get("isolate_workspace"):
+                mounts.extend(self._get_isolated_thread_mounts(thread_id, user_id=user_id))
+            else:
+                mounts.extend(self._get_thread_mounts(thread_id, user_id=user_id))
             logger.info(f"Adding thread mounts for thread {thread_id}: {mounts}")
 
         skills_mounts = self._get_skills_mounts(
@@ -945,7 +958,9 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             mounts.extend(user_skill_mounts)
             logger.info(f"Adding user skill mounts: {user_skill_mounts}")
 
-        lark_cli_mounts = self._get_lark_cli_runtime_mounts(user_id=user_id)
+        lark_cli_mounts = (
+            [] if self._config.get("isolate_workspace") else self._get_lark_cli_runtime_mounts(user_id=user_id)
+        )
         if lark_cli_mounts:
             mounts.extend(lark_cli_mounts)
             logger.info(f"Adding Lark CLI runtime mounts: {lark_cli_mounts}")
@@ -1002,6 +1017,24 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             seen.add(container_path)
             deduped.append((host_path, container_path, read_only))
         return deduped
+
+    @staticmethod
+    def _get_isolated_thread_mounts(thread_id: str, *, user_id: str | None = None) -> list[tuple[str, str, bool]]:
+        from my_assistant.config.workspace import get_current_workspace
+        from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+
+        owner = AioSandboxProvider._effective_acquire_user_id(user_id)
+        workspace = get_current_workspace()
+        if workspace is None:
+            mounts = AioSandboxProvider._get_thread_mounts(thread_id, user_id=owner)
+            return [(path, target, target.endswith("/uploads")) for path, target, _ in mounts[:3]]
+        paths = workspace.ensure_runtime_dirs(thread_id)
+        copy = prepare_workspace_copy(workspace, thread_id, owner)
+        return [
+            (str(copy), f"{VIRTUAL_PATH_PREFIX}/workspace", False),
+            (paths["uploads_path"], f"{VIRTUAL_PATH_PREFIX}/uploads", True),
+            (paths["outputs_path"], f"{VIRTUAL_PATH_PREFIX}/outputs", False),
+        ]
 
     @staticmethod
     def _get_thread_mounts(thread_id: str, *, user_id: str | None = None) -> list[tuple[str, str, bool]]:
@@ -1506,6 +1539,14 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             return str(uuid.uuid4())[:8]
         effective_user_id = self._effective_acquire_user_id(user_id)
         skills_container_path = self._configured_skills_container_path()
+        if self._config.get("isolate_workspace"):
+            from my_assistant.config.workspace import get_current_workspace
+            from my_assistant.sandbox.workspace_copy import workspace_copy_key
+
+            workspace = get_current_workspace()
+            scope = workspace_copy_key(workspace) if workspace else "thread-local"
+            identity = f"docker-isolation-v1:{scope}:{skills_container_path}:{effective_user_id}:{thread_id}"
+            return hashlib.sha256(identity.encode()).hexdigest()[:16]
         if self._thread_skill_projection_active(thread_id, effective_user_id):
             return self._policy_scoped_sandbox_id(
                 thread_id,
@@ -1536,6 +1577,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 effective_user_id,
             )
             or self._configured_skills_container_path() != DEFAULT_SKILLS_CONTAINER_PATH
+            or self._config.get("isolate_workspace", False)
         )
         expected_id = self._sandbox_id_for_thread(thread_id, effective_user_id)
         stale_id: str | None = None
@@ -1686,7 +1728,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 return None
             self._warm_pool_identity.pop(sandbox_id, None)
             info, _ = warm_item
-            sandbox = AioSandbox(id=sandbox_id, base_url=info.sandbox_url, request_headers=info.request_headers)
+            sandbox = self._sandbox_client(info)
             self._sandboxes[sandbox_id] = sandbox
             self._sandbox_infos[sandbox_id] = info
             self._active_sandbox_identity[sandbox_id] = key
@@ -1731,7 +1773,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
             self._assert_active_identity_available_locked(info.sandbox_id, key)
             self._assert_warm_identity_available_locked(info.sandbox_id, key)
 
-        sandbox = AioSandbox(id=info.sandbox_id, base_url=info.sandbox_url, request_headers=info.request_headers)
+        sandbox = self._sandbox_client(info)
         # Ownership first, so a failure cannot leave a tracked-but-unowned sandbox.
         # There is no container to roll back (we did not create it), but the
         # host-side HTTP client constructed above is ours and must not leak —
@@ -1777,7 +1819,7 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
 
     def _register_created_sandbox(self, thread_id: str | None, sandbox_id: str, info: SandboxInfo, *, user_id: str | None = None) -> str:
         """Track a newly-created sandbox in the active maps."""
-        sandbox = AioSandbox(id=sandbox_id, base_url=info.sandbox_url, request_headers=info.request_headers)
+        sandbox = self._sandbox_client(info)
         key = (
             self._thread_key(
                 thread_id,
@@ -2365,6 +2407,23 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
                 self._last_activity[sandbox_id] = time.time()
         return sandbox
 
+    def _sandbox_client(self, info: SandboxInfo) -> AioSandbox:
+        if self._config.get("isolate_workspace"):
+            from functools import partial
+
+            from .docker_exec import execute_isolated_command
+
+            runner = partial(
+                execute_isolated_command,
+                info.container_id or info.container_name,
+                self._config["bash_command_timeout"],
+            )
+            return AioSandbox(
+                id=info.sandbox_id, base_url=info.sandbox_url,
+                request_headers=info.request_headers, command_runner=runner,
+            )
+        return AioSandbox(id=info.sandbox_id, base_url=info.sandbox_url, request_headers=info.request_headers)
+
     def release(self, sandbox_id: str) -> None:
         """Release a sandbox from active use into the warm pool.
 
@@ -2380,6 +2439,10 @@ class AioSandboxProvider(WarmPoolLifecycleMixin[SandboxInfo], SandboxProvider):
         Args:
             sandbox_id: The ID of the sandbox to release.
         """
+        if self._config.get("isolate_workspace"):
+            self.destroy(sandbox_id)
+            return
+
         info = None
         sandbox = None
         thread_keys_to_remove: list[tuple[str, str]] = []

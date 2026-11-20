@@ -3,6 +3,7 @@ import errno
 import logging
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -65,6 +66,7 @@ class AioSandbox(Sandbox):
         base_url: str,
         home_dir: str | None = None,
         request_headers: dict[str, str] | None = None,
+        command_runner: Callable[[str, dict[str, str] | None, float | None], str] | None = None,
     ):
         """Initialize the AIO sandbox.
 
@@ -76,6 +78,9 @@ class AioSandbox(Sandbox):
                 relay. These are never injected into sandbox commands.
         """
         super().__init__(id)
+        self._command_runner = command_runner
+        if command_runner is not None:
+            self.persistent_shell_sessions = False
         self._base_url = base_url
         client_kwargs = {
             "base_url": base_url,
@@ -281,7 +286,7 @@ class AioSandbox(Sandbox):
         use distinct server-side sessions and can execute concurrently. Secret-
         bearing commands keep the existing fresh ``bash.exec`` behavior.
         """
-        if env or scope_id is None:
+        if getattr(self, "_command_runner", None) is not None or env or scope_id is None:
             return self.execute_command(command, env=env, timeout=timeout)
         del timeout
         _validate_extra_env(env)
@@ -415,13 +420,14 @@ class AioSandbox(Sandbox):
         Returns:
             The output of the command.
         """
-        del timeout
         # Validate ``env`` keys before forwarding them to the ``bash.exec`` API.
         # The public ``Sandbox.execute_command`` contract accepts arbitrary dict
         # keys; enforcing the POSIX env-var name rule keeps the contract
         # consistent with the local and e2b sandboxes and catches unsafe keys
         # early. ``_validate_extra_env`` is a no-op when ``env`` is None or empty.
         _validate_extra_env(env)
+        if runner := getattr(self, "_command_runner", None):
+            return runner(command, env, timeout)
         if env:
             return self._execute_with_env(command, env)
         with self._lock:

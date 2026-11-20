@@ -573,6 +573,7 @@ class LocalContainerBackend(SandboxBackend):
         environment: dict[str, str],
         network_config: dict[str, object] | None = None,
         required_shell_sessions: int = 0,
+        isolate_workspace: bool = False,
     ):
         """Initialize the local container backend.
 
@@ -592,8 +593,12 @@ class LocalContainerBackend(SandboxBackend):
         self._required_shell_sessions = required_shell_sessions
         self._network_config = network_config or {"mode": "open"}
         self._network_mode = str(self._network_config.get("mode", "open"))
+        self._isolate_workspace = isolate_workspace
         self._allow_synthetic_dns = False
         self._runtime = self._detect_runtime()
+
+        if self._isolate_workspace and _resolve_docker_bind_host() not in {"127.0.0.1", "[::1]"}:
+            raise ValueError("Workspace isolation requires sandbox API binding on loopback")
 
         if self._network_mode != "open":
             if self._runtime != "docker":
@@ -1740,7 +1745,7 @@ class LocalContainerBackend(SandboxBackend):
             seccomp_profile = os.environ.get("MY_ASSISTANT_SANDBOX_SECCOMP_PROFILE", "").strip()
             if seccomp_profile:
                 cmd.extend(["--security-opt", f"seccomp={seccomp_profile}"])
-            elif not _env_flag_disabled("MY_ASSISTANT_SANDBOX_SECCOMP_UNCONFINED"):
+            elif not self._isolate_workspace and not _env_flag_disabled("MY_ASSISTANT_SANDBOX_SECCOMP_UNCONFINED"):
                 cmd.extend(["--security-opt", "seccomp=unconfined"])
             else:
                 # The documented opt-out must actually enable Docker's

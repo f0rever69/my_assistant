@@ -103,6 +103,13 @@ def get_available_tools(
     """
     config = app_config or get_app_config()
     tool_configs = [tool for tool in config.tools if groups is None or tool.group in groups]
+    isolate_workspace = getattr(getattr(config, "sandbox", None), "isolate_workspace", False)
+    if isolate_workspace:
+        tool_configs = [
+            tool for tool in tool_configs
+            if tool.use.startswith(("my_assistant.sandbox.tools:", "my_assistant.sandbox.workspace_search:"))
+            or tool.use == CONVERSATION_TOOL_USE
+        ]
     if not include_conversation_reader:
         tool_configs = [tool for tool in tool_configs if tool.use != CONVERSATION_TOOL_USE]
 
@@ -129,7 +136,7 @@ def get_available_tools(
 
     # Conditionally add tools based on config
     builtin_tools = BUILTIN_TOOLS.copy()
-    if is_mcp_task_runtime_available():
+    if not isolate_workspace and is_mcp_task_runtime_available():
         builtin_tools.extend((list_background_tasks, cancel_background_task))
     if include_upload_tool:
         builtin_tools.append(list_uploaded_files)
@@ -160,7 +167,7 @@ def get_available_tools(
     # Read the current extension configuration from disk so updates are visible
     # when the Agent loads MCP tools.
     mcp_tools = []
-    if include_mcp:
+    if include_mcp and not isolate_workspace:
         try:
             from my_assistant.config.extensions_config import ExtensionsConfig
             from my_assistant.mcp.cache import get_cached_mcp_tools
@@ -188,7 +195,9 @@ def get_available_tools(
     try:
         from my_assistant.tools.builtins.invoke_acp_agent_tool import build_invoke_acp_agent_tool
 
-        if app_config is None:
+        if isolate_workspace:
+            acp_agents = {}
+        elif app_config is None:
             from my_assistant.config.acp_config import get_acp_agents
 
             acp_agents = get_acp_agents()

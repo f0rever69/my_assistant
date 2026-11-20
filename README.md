@@ -90,7 +90,20 @@ TUI 中使用 `/workspace` 打开选择器，或使用下面的命令管理工�
 
 每个线程和结构化任务都绑定工作区 ID、根路径及根目录指纹。恢复时如果当前工作区不匹配、注册被删除、根目录被替换或策略已变化，历史记录仍可查看，但模型调用和文件动作会被拒绝；系统不会按同名目录自动改绑。跨工作区复制只能通过 `/workspace export <relative-path>` 生成文本快照，再在目标工作区执行 `/workspace reference <export-id>`，快照会以不可信数据引用写入目标线程，不开放源工作区的实时路径、索引或任务状态。
 
-Workspace 提供身份和工具访问策略；`LocalSandboxProvider` 通过虚拟路径映射和路径检查执行这些策略，不提供操作系统级进程隔离。当前配置 `allow_host_bash: false`，即使工作区开启 Shell，也不会因此获得可运行的本机 Bash。需要真正隔离命令进程时，应配置 AIO、BoxLite、OpenSandbox 或 E2B 等容器或微 VM Provider，并同时配置其网络和挂载策略。
+当前配置使用 Docker AIO 沙箱。启动 Docker Desktop 的 Linux 容器引擎或本机 Docker Engine 28+ 后，可以运行 `uv run my_assistant --workspace <目录> --workspace-shell`。首次需要准备配置中指定的 AIO 镜像和网络代理镜像，Provider 负责创建和回收容器。模型调用和运行记录由宿主机上的 Harness 管理。
+
+| 容器目录 | 宿主机内容 | 容器权限 |
+| --- | --- | --- |
+| `/mnt/user-data/workspace` | 当前线程的 Workspace 副本，位于 `<运行数据目录>/users/<用户ID>/threads/<线程ID>/docker-workspace/<策略指纹>/files` | 读写副本 |
+| `/mnt/user-data/uploads` | Workspace 的 `.my-assistant/threads/<线程ID>/uploads` | 只读 |
+| `/mnt/user-data/outputs` | Workspace 的 `.my-assistant/threads/<线程ID>/outputs` | 读写 |
+| `/mnt/skills/...` | 已启用技能的投影目录 | 只读 |
+
+省略 `--workspace` 时，前三项映射到线程自己的 `user-data/workspace`、`user-data/uploads` 和 `user-data/outputs`。绑定 Workspace 后，首次创建副本会筛掉受保护文件及符号链接。副本随同一线程保留。宿主文件更新时可新建线程重新取样。
+
+用 `/workspace diff` 查看变更列表，用 `/workspace diff <相对路径>` 查看文本差异和 SHA-256，然后用 `/workspace apply <相对路径> <SHA-256>` 将核对过的文件写回。写回检查权限、宿主文件原始版本和副本内容，事务状态可由现有文件恢复流程处理。删除会列在差异中，写回入口支持新增和修改。
+
+本机 Docker 沙箱启用内置 seccomp、CPU、内存和进程数限制。默认配置只开放内部控制面，容器应用的对外访问受到隔离网络限制。命令超时会终止容器，回合结束时释放容器并保留文件副本。
 
 ## 个人知识库问答
 

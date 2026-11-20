@@ -1598,13 +1598,16 @@ def ensure_sandbox_initialized(runtime: Runtime | None = None) -> Sandbox:
             owner_id = sandbox_lease_owner(runtime.context)
             thread_id = _resolve_runtime_thread_id(runtime)
             if owner_id is not None and thread_id is not None:
-                sandbox_id = get_sandbox_lease_manager(provider).reuse_or_acquire(
-                    owner_id,
-                    sandbox_id,
-                    thread_id=thread_id,
-                    user_id=resolve_runtime_user_id(runtime),
-                    release_on_last=not fork_restored,
-                )
+                from my_assistant.config.workspace import workspace_scope
+
+                with workspace_scope((runtime.context or {}).get("workspace")):
+                    sandbox_id = get_sandbox_lease_manager(provider).reuse_or_acquire(
+                        owner_id,
+                        sandbox_id,
+                        thread_id=thread_id,
+                        user_id=resolve_runtime_user_id(runtime),
+                        release_on_last=not fork_restored,
+                    )
                 if not fork_restored:
                     runtime.state["sandbox"] = {"sandbox_id": sandbox_id}
             sandbox = provider.get(sandbox_id)
@@ -1655,6 +1658,8 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
     sandbox startup and readiness polling do not fall back to synchronous
     ``provider.acquire()`` during async tool execution.
     """
+    from my_assistant.config.workspace import workspace_scope
+
     if runtime is None:
         raise SandboxRuntimeError("Tool runtime not available")
 
@@ -1679,13 +1684,14 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
             owner_id = sandbox_lease_owner(runtime.context)
             thread_id = _resolve_runtime_thread_id(runtime)
             if owner_id is not None and thread_id is not None:
-                sandbox_id = await get_sandbox_lease_manager(provider).reuse_or_acquire_async(
-                    owner_id,
-                    sandbox_id,
-                    thread_id=thread_id,
-                    user_id=resolve_runtime_user_id(runtime),
-                    release_on_last=not fork_restored,
-                )
+                with workspace_scope((runtime.context or {}).get("workspace")):
+                    sandbox_id = await get_sandbox_lease_manager(provider).reuse_or_acquire_async(
+                        owner_id,
+                        sandbox_id,
+                        thread_id=thread_id,
+                        user_id=resolve_runtime_user_id(runtime),
+                        release_on_last=not fork_restored,
+                    )
                 if not fork_restored:
                     runtime.state["sandbox"] = {"sandbox_id": sandbox_id}
             sandbox = provider.get(sandbox_id)
@@ -1701,14 +1707,15 @@ async def ensure_sandbox_initialized_async(runtime: Runtime | None = None) -> Sa
     provider = get_sandbox_provider()
     user_id = resolve_runtime_user_id(runtime)
     owner_id = sandbox_lease_owner(runtime.context)
-    if owner_id is None:
-        sandbox_id = await provider.acquire_async(thread_id, user_id=user_id)
-    else:
-        sandbox_id = await get_sandbox_lease_manager(provider).acquire_async(
-            owner_id,
-            thread_id,
-            user_id=user_id,
-        )
+    with workspace_scope((runtime.context or {}).get("workspace")):
+        if owner_id is None:
+            sandbox_id = await provider.acquire_async(thread_id, user_id=user_id)
+        else:
+            sandbox_id = await get_sandbox_lease_manager(provider).acquire_async(
+                owner_id,
+                thread_id,
+                user_id=user_id,
+            )
 
     runtime.state["sandbox"] = {"sandbox_id": sandbox_id}
 

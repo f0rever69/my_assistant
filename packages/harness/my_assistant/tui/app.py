@@ -860,6 +860,24 @@ class MyAssistantTUI(App):
                 result = self.session.client.export_workspace_file(self._workspace_context, parts[1])
                 self._dispatch(SystemMessage("Explicit snapshot export:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 return
+            if action in {"diff", "apply"}:
+                if not self._workspace_context or not self._conv_thread_id:
+                    raise ValueError("Open a Workspace thread before reviewing Docker changes")
+                client = self.session.client
+                thread = self._conv_thread_id
+                workspace = self._workspace_context
+                if action == "diff" and len(parts) == 1:
+                    changes = client.diff_workspace_copy(thread, workspace)
+                    self._dispatch(SystemMessage(json.dumps(changes, ensure_ascii=False, indent=2) if changes else "No Docker Workspace changes."))
+                elif action == "diff" and len(parts) == 2:
+                    review = client.review_workspace_copy(thread, workspace, parts[1])
+                    self._dispatch(SystemMessage(f"{review['diff']}\nSHA-256 {review['sha256']}"))
+                elif action == "apply" and len(parts) == 3:
+                    path = client.apply_workspace_copy(thread, workspace, parts[1], parts[2])
+                    self._dispatch(SystemMessage(f"Applied Docker Workspace change to {path}."))
+                else:
+                    raise ValueError("Usage: /workspace diff [path] or /workspace apply <path> <sha256>")
+                return
             if action == "exports" and len(parts) == 1:
                 self._dispatch(SystemMessage(json.dumps(self.session.client.list_workspace_exports(), ensure_ascii=False, indent=2)))
                 return
@@ -876,7 +894,7 @@ class MyAssistantTUI(App):
                 self._dispatch(SystemMessage("Snapshot attached; tell the assistant to read this path. No live source access:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 self._refresh_header()
                 return
-            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
+            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|diff [path]|apply <path> <sha256>|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
         except Exception as exc:  # noqa: BLE001 - registry/parse failures must not terminate TUI
             self._dispatch(SystemMessage(f"Workspace: {exc}", tone="error"))
 
