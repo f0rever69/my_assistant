@@ -23,3 +23,12 @@ extensions_config.json
 /简历项目描述.md
 /面试题问答-基于本项目.md
 /conversation-chain-analysis.md
+
+# Skill packages kept locally.
+/skills/public/frontend-design/
+/skills/public/web-design-guidelines/
+/skills/public/vercel-deploy-claimable/
+/skills/public/image-generation/
+/skills/public/video-generation/
+/skills/public/music-generation/
+/skills/public/podcast-generation/
