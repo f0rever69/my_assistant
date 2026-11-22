@@ -6,8 +6,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
 from langgraph.types import Command
 
-from my_assistant.config.paths import VIRTUAL_PATH_PREFIX, get_paths
-from my_assistant.runtime.user_context import resolve_runtime_user_id
+from my_assistant.config.paths import VIRTUAL_PATH_PREFIX
 from my_assistant.tools.types import Runtime
 
 OUTPUTS_VIRTUAL_PREFIX = f"{VIRTUAL_PATH_PREFIX}/outputs"
@@ -51,8 +50,7 @@ def _normalize_presented_filepath(
     if runtime.state is None:
         raise ValueError("Thread runtime state is not available")
 
-    thread_id = _get_thread_id(runtime)
-    if not thread_id:
+    if not _get_thread_id(runtime):
         raise ValueError("Thread ID is not available in runtime context or runtime config")
 
     thread_data = runtime.state.get("thread_data") or {}
@@ -61,21 +59,23 @@ def _normalize_presented_filepath(
         raise ValueError("Thread outputs path is not available in runtime state")
 
     outputs_dir = Path(outputs_path).resolve()
-    stripped = filepath.lstrip("/")
-    virtual_prefix = VIRTUAL_PATH_PREFIX.lstrip("/")
+    virtual_path = "/" + filepath.lstrip("/")
+    invalid_path = f"Only files in {OUTPUTS_VIRTUAL_PREFIX} can be presented: {filepath}"
+    host_path = filepath
+    if virtual_path == VIRTUAL_PATH_PREFIX or virtual_path.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
+        if not virtual_path.startswith(f"{OUTPUTS_VIRTUAL_PREFIX}/"):
+            raise ValueError(invalid_path)
+        from my_assistant.sandbox.tools import replace_virtual_path
 
-    if stripped == virtual_prefix or stripped.startswith(virtual_prefix + "/"):
-        try:
-            actual_path = get_paths().resolve_virtual_path(thread_id, filepath, user_id=resolve_runtime_user_id(runtime))
-        except TypeError:
-            actual_path = get_paths().resolve_virtual_path(thread_id, filepath)
-    else:
-        actual_path = Path(filepath).expanduser().resolve()
+        host_path = replace_virtual_path(virtual_path, thread_data)
+    actual_path = Path(host_path).expanduser().resolve()
 
     try:
         relative_path = actual_path.relative_to(outputs_dir)
     except ValueError as exc:
-        raise ValueError(f"Only files in {OUTPUTS_VIRTUAL_PREFIX} can be presented: {filepath}") from exc
+        raise ValueError(invalid_path) from exc
+    if not relative_path.parts:
+        raise ValueError(invalid_path)
 
     return f"{OUTPUTS_VIRTUAL_PREFIX}/{relative_path.as_posix()}"
 

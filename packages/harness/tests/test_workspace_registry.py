@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -225,6 +226,37 @@ def test_middleware_persists_binding_and_rechecks_revocation_before_tool(catalog
     with pytest.raises(WorkspaceMismatch):
         middleware.before_agent(output, runtime)
     assert not (beta.root / ".my-assistant").exists()
+
+
+@pytest.mark.parametrize("bind_workspace", [False, True])
+def test_present_files_uses_current_thread_outputs(catalog, bind_workspace):
+    from my_assistant.tools.builtins.present_file_tool import present_file_tool
+
+    _, alpha, _ = catalog
+    context = {"thread_id": "present-file"}
+    if bind_workspace:
+        context["workspace"] = alpha.to_context()
+    runtime = SimpleNamespace(context=context)
+    runtime.state = ThreadDataMiddleware().before_agent({}, runtime)
+    outputs = Path(runtime.state["thread_data"]["outputs_path"])
+    artifact = outputs / "reports" / "bubble_sort.py"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("# generated file", encoding="utf-8")
+    virtual = "/mnt/user-data/outputs/reports/bubble_sort.py"
+
+    for path in (virtual, virtual.lstrip("/"), str(artifact)):
+        result = present_file_tool.func(runtime, [path], "present")
+        assert result.update.get("artifacts") == [virtual], result.update["messages"][0].content
+
+    for path in (
+        "/mnt/user-data/uploads/input.py",
+        "/mnt/user-data/outputs/../uploads/input.py",
+        "/mnt/user-data/outputs/",
+        str(outputs.with_name("uploads") / "input.py"),
+    ):
+        result = present_file_tool.func(runtime, [path], "present")
+        assert "artifacts" not in result.update
+        assert "Only files in /mnt/user-data/outputs" in result.update["messages"][0].content
 
 
 def test_explicit_export_reference_is_snapshot_scoped_and_idempotent(catalog):

@@ -195,6 +195,7 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
     from langchain_core.messages import AIMessage, ToolMessage
     from my_assistant import client as client_module
     from my_assistant.config import get_app_config
+    from my_assistant.runtime.checkpointer.provider import reset_checkpointer
     from my_assistant.sandbox.sandbox_provider import get_sandbox_provider
     from my_assistant.tui.cli import main
     from my_assistant.tui.session import open_session
@@ -202,7 +203,7 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
 
     class ScriptedModel(FakeMessagesListChatModel):
         def bind_tools(self, tools, **kwargs):
-            assert "bash" in {tool.name for tool in tools}
+            assert {"bash", "present_files"} <= {tool.name for tool in tools}
             assert not {"web_search", "web_fetch", "invoke_acp_agent"} & {
                 tool.name for tool in tools
             }
@@ -213,8 +214,13 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
                 message for message in messages if isinstance(message, ToolMessage)
             ]
             if tool_messages:
-                assert "project source" in tool_messages[-1].content
-                assert "Exit Code:" not in tool_messages[-1].content
+                latest = tool_messages[-1]
+                if latest.tool_call_id == "bash-call":
+                    assert "project source" in latest.content
+                    assert "Exit Code:" not in latest.content
+                else:
+                    assert latest.tool_call_id == "present-call"
+                    assert latest.content == "Successfully presented files"
             return super()._generate(messages, **kwargs)
 
     def create_model(*args, **kwargs):
@@ -227,8 +233,21 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
                             "name": "bash",
                             "id": "bash-call",
                             "args": {
-                                "command": "cat docs/sample.txt && printf 'cli result' > docs/cli.txt"
+                                "command": (
+                                    "cat docs/sample.txt && printf 'cli result' > docs/cli.txt "
+                                    "&& printf 'output artifact' > /mnt/user-data/outputs/cli.txt"
+                                )
                             },
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "present_files",
+                            "id": "present-call",
+                            "args": {"filepaths": ["/mnt/user-data/outputs/cli.txt"]},
                         }
                     ],
                 ),
@@ -239,7 +258,10 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
     config = get_app_config()
     monkeypatch.setattr(config.memory, "enabled", False)
     monkeypatch.setattr(config.title, "enabled", False)
+    monkeypatch.setattr(config.database, "sqlite_dir", str(workspace.root.parent / "db"))
+    monkeypatch.setattr(config.run_events, "backend", "memory")
     monkeypatch.setattr(client_module, "create_chat_model", create_model)
+    reset_checkpointer()
     registry = get_workspace_registry()
     registered = registry.register(workspace.root)
     registered = registry.update(
@@ -268,6 +290,8 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
         )
         assert "Docker CLI verified" in capsys.readouterr().out
         assert not (workspace.root / "docs" / "cli.txt").exists()
+        output = workspace.runtime_dir(thread) / "outputs" / "cli.txt"
+        assert output.read_text(encoding="utf-8") == "output artifact"
         assert not provider._sandboxes
         assert not provider._warm_pool
         session = open_session(persistence=False)

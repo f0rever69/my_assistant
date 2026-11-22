@@ -109,7 +109,7 @@ token_budget:
 # A run's recursion_limit caps the number of LangGraph super-steps (each is at
 # least one LLM call). Clients may override the default per request; invalid or
 # non-positive client values fall back to this configured default.
-recursion_limit: 40
+recursion_limit: 100
 
 # The runtime never trusts a configured or caller-supplied value above this
 # ceiling, preventing runaway API cost / DoS. Raise it only if you legitimately
