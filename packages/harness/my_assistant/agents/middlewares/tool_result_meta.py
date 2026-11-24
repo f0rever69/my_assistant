@@ -262,6 +262,8 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     """Attach my_assistant_tool_meta to a ToolMessage if not already present."""
     existing = (msg.additional_kwargs or {}).get(TOOL_META_KEY)
     if existing is not None:
+        if isinstance(existing, dict) and existing.get("status") == "error":
+            msg.status = "error"
         return msg
 
     kwargs = msg.additional_kwargs or {}
@@ -275,6 +277,7 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
         updated_kwargs = dict(kwargs)
         updated_kwargs[TOOL_META_KEY] = meta
         msg.additional_kwargs = updated_kwargs
+        msg.status = "error"
         return msg
 
     content = msg.content if isinstance(msg.content, str) else ""
@@ -322,6 +325,8 @@ def normalize_tool_message(msg: ToolMessage) -> ToolMessage:
     updated_kwargs = dict(msg.additional_kwargs or {})
     updated_kwargs[TOOL_META_KEY] = meta
     msg.additional_kwargs = updated_kwargs
+    if meta["status"] == "error":
+        msg.status = "error"
     return msg
 
 

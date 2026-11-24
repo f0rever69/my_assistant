@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import uuid
 from dataclasses import replace
 
 import pytest
@@ -69,6 +70,49 @@ def test_filtered_copy_and_reviewed_write_back(workspace):
     assert not (
         prepare_workspace_copy(workspace, "other-thread", owner) / "outside.txt"
     ).exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("MY_ASSISTANT_TEST_DOCKER") != "1",
+    reason="requires local Docker and AIO image",
+)
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_acquire_recovers_leftover_networks(workspace, monkeypatch, asynchronous):
+    from my_assistant.community.aio_sandbox import AioSandboxProvider
+    from my_assistant.config import get_app_config
+
+    config = get_app_config()
+    monkeypatch.setattr(config.sandbox, "container_prefix", f"ma-recovery-{uuid.uuid4().hex[:10]}")
+    provider = AioSandboxProvider()
+    thread = "orphan-recovery"
+    with workspace_scope(workspace):
+        sandbox_id = provider._sandbox_id_for_thread(thread, "default")
+    backend = provider._backend
+    _, network = backend._resource_names(sandbox_id)
+    egress = backend._egress_network_name(sandbox_id)
+
+    async def acquire_async():
+        with workspace_scope(workspace):
+            return await provider.acquire_async(thread, user_id="default")
+
+    try:
+        backend._create_internal_network(network, sandbox_id)
+        backend._create_egress_network(egress, sandbox_id)
+        discovered = backend.discover(sandbox_id)
+        assert discovered is not None and discovered.requires_replacement
+        if asynchronous:
+            acquired = asyncio.run(acquire_async())
+        else:
+            with workspace_scope(workspace):
+                acquired = provider.acquire(thread, user_id="default")
+        assert acquired == sandbox_id
+        assert provider.get(acquired).read_file("/mnt/user-data/workspace/docs/sample.txt").strip() == "project source"
+        assert backend._restricted_resources_status(sandbox_id) == "compatible"
+        provider.release(acquired)
+        assert backend._restricted_resources_status(sandbox_id) == "missing"
+    finally:
+        provider.shutdown()
+        backend._cleanup_restricted_resources(sandbox_id)
 
 
 @pytest.mark.skipif(

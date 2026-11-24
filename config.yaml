@@ -97,7 +97,7 @@ token_usage:
 # is forced to produce a final answer immediately.
 token_budget:
   enabled: true                 # Set to true to activate budget enforcement
-  max_tokens: 50000             # Total token limit (input + output) per run
+  max_tokens: 150000            # Total token limit (input + output) per run
   max_input_tokens: null        # Optional separate input-only limit
   max_output_tokens: null       # Optional separate output-only limit
   warn_threshold: 0.75          # Warn at 75% of the budget
@@ -109,7 +109,7 @@ token_budget:
 # A run's recursion_limit caps the number of LangGraph super-steps (each is at
 # least one LLM call). Clients may override the default per request; invalid or
 # non-positive client values fall back to this configured default.
-recursion_limit: 100
+recursion_limit: 300
 
 # The runtime never trusts a configured or caller-supplied value above this
 # ceiling, preventing runaway API cost / DoS. Raise it only if you legitimately

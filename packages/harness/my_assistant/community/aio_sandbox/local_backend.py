@@ -1226,6 +1226,35 @@ class LocalContainerBackend(SandboxBackend):
             return True
         return False
 
+    def _discover_restricted_remnants(self, sandbox_id: str) -> SandboxInfo | None:
+        """Report partial resource sets for provider-owned, fenced replacement."""
+        container_name = f"{self._container_prefix}-{sandbox_id}"
+        proxy_name, network_name = self._resource_names(sandbox_id)
+        inspections = self._batch_inspect([container_name, proxy_name], strict=True)
+        resources = [
+            (inspections.get(container_name), "sandbox"),
+            (inspections.get(proxy_name), "network-proxy"),
+            (self._inspect_network(network_name), "network"),
+            (self._inspect_network(self._egress_network_name(sandbox_id)), "egress-network"),
+        ]
+        present = [(resource, role) for resource, role in resources if resource is not None]
+        if not present:
+            return None
+        for resource, role in present:
+            identity = {"my_assistant.sandbox_id": sandbox_id, "my_assistant.role": role}
+            if not self._labels_match(resource.labels, identity):
+                logger.warning("Leaving restricted resource for %s unmanaged because its identity differs", sandbox_id)
+                return None
+        logger.info("Found incomplete restricted resource set for sandbox %s", sandbox_id)
+        sandbox = inspections.get(container_name)
+        return SandboxInfo(
+            sandbox_id=sandbox_id,
+            sandbox_url="",
+            container_name=container_name,
+            created_at=sandbox.created_at if sandbox is not None else time.time(),
+            requires_replacement=True,
+        )
+
     def discover(self, sandbox_id: str) -> SandboxInfo | None:
         """Discover an existing container by its deterministic name.
 
@@ -1252,6 +1281,11 @@ class LocalContainerBackend(SandboxBackend):
             return None
 
         if not running:
+            if self._runtime == "docker" and self._network_mode != "open":
+                try:
+                    return self._discover_restricted_remnants(sandbox_id)
+                except RuntimeError as e:
+                    logger.warning("Could not inspect incomplete resources for sandbox %s: %s", sandbox_id, e)
             return None
 
         request_headers: dict[str, str] = {}
@@ -1489,18 +1523,18 @@ class LocalContainerBackend(SandboxBackend):
         if stop_sandbox:
             self._stop_container(f"{self._container_prefix}-{sandbox_id}")
         self._stop_container(proxy_name)
-        # ``--rm`` removes a container after it has run and then stopped, but
-        # not one left in Docker's Created state by a failure before start.
-        # An explicit remove closes that lifecycle gap and is harmless after a
-        # normal stop (Docker reports the already-removed name as not found).
-        removed = subprocess.run(
-            ["docker", "rm", "-f", proxy_name],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if removed.returncode != 0 and "no such container" not in (removed.stderr or "").lower():
-            logger.warning("Failed to remove sandbox network proxy %s: %s", proxy_name, removed.stderr.strip())
+        # A failed start can leave either container in Created state, where
+        # --rm does not remove it. This also serves creation rollback.
+        for container_name in (f"{self._container_prefix}-{sandbox_id}", proxy_name):
+            removed = subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if removed.returncode != 0 and "no such container" not in (removed.stderr or "").lower():
+                logger.warning("Failed to remove sandbox container %s: %s", container_name, removed.stderr.strip())
         for current_network_name in (network_name, egress_network_name):
             result = subprocess.run(
                 ["docker", "network", "rm", current_network_name],

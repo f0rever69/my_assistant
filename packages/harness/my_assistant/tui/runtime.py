@@ -16,6 +16,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import Any, Protocol
 
+from my_assistant.agents.middlewares.tool_result_meta import TOOL_META_KEY
+
 from .view_state import (
     Action,
     AssistantDelta,
@@ -100,7 +102,12 @@ def _translate_message(data: Any) -> list[Action]:
                 )
             )
     elif message_type == "tool":
-        is_error = bool(data.get("is_error")) or data.get("status") == "error"
+        metadata = (data.get("additional_kwargs") or {}).get(TOOL_META_KEY)
+        is_error = (
+            bool(data.get("is_error"))
+            or data.get("status") == "error"
+            or (isinstance(metadata, dict) and metadata.get("status") == "error")
+        )
         actions.append(
             ToolResult(
                 tool_call_id=_as_str(data.get("tool_call_id")),
