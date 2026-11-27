@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import shlex
+import subprocess
 import uuid
 from functools import partial
 from typing import ClassVar
@@ -23,10 +24,13 @@ from textual.widgets.option_list import Option
 
 from my_assistant.runtime.goal import parse_goal_command
 
+from .clipboard import copy_native_text
 from .command_registry import format_command_help
 from .input_history import InputHistory
 from .render import render_header, render_progress, render_status, render_transcript
 from .runtime import project_progress, stream_actions
+from .text_export import selectable_rich_text, transcript_text
+from .text_widgets import ConflictReviewScreen, CopyableStatic, TextViewScreen
 from .theme import SYMBOLS, THEME
 from .view_state import (
     ClearRows,
@@ -40,12 +44,14 @@ from .view_state import (
 )
 from .widgets.composer import ComposerInput
 
-_HELP_KEYS = "Keys:  Enter send · PgUp/PgDn scroll transcript · Ctrl+C interrupt or quit · Ctrl+L redraw · / commands · Esc close overlay"
+_HELP_KEYS = "Keys: Enter send · PgUp/PgDn scroll · Select text + Ctrl+C copy; otherwise interrupt/quit · F8 or /copy text view · Ctrl+L redraw"
 _HELP_TEXT = (
     f"{format_command_help()}\n"
     'Memory: /memory list · /memory search <text> · /memory forget <fact-id> · '
     '/memory correct <fact-id> "replacement"\n'
     'Plan: /plan on|off|preview|show · /plan approve <version> · /accept [show|check|confirm]\n'
+    'Workspace: /workspace refresh [--dry-run] · /workspace diff [path] · /workspace apply <path> <sha256>\n'
+    'Conflicts: /workspace conflicts [path] opens version-choice dialog; reviewed tokens are carried automatically\n'
     f"{_HELP_KEYS}"
 )
 
@@ -180,6 +186,7 @@ class MyAssistantTUI(App):
     BINDINGS: ClassVar = [
         Binding("ctrl+c", "interrupt", "Interrupt / Quit", priority=True, show=True),
         Binding("ctrl+l", "redraw", "Redraw", show=False),
+        Binding("f8", "text_view", "Copyable text", show=False),
         Binding("ctrl+u", "clear_composer", "Clear input", show=False),
         # Up/Down drive the palette when it's open, otherwise input history.
         # Tab/Enter/Esc only act when the palette is open. check_action gates all
@@ -227,13 +234,13 @@ class MyAssistantTUI(App):
     # ----- composition --------------------------------------------------- #
 
     def compose(self) -> ComposeResult:
-        yield Static(id="header")
+        yield CopyableStatic(id="header")
         with VerticalScroll(id="progress"):
-            yield Static(id="progress-content")
+            yield CopyableStatic(id="progress-content")
         with VerticalScroll(id="scroll"):
-            yield Static(id="transcript")
-        yield Static(id="status")
-        yield Static(id="palette")
+            yield CopyableStatic(id="transcript")
+        yield CopyableStatic(id="status")
+        yield CopyableStatic(id="palette")
         yield ComposerInput(
             placeholder="Message my_assistant…   ( / for commands )", id="composer"
         )
@@ -328,6 +335,13 @@ class MyAssistantTUI(App):
     # ----- slash command palette ----------------------------------------- #
 
     def check_action(self, action: str, parameters):
+        if action == "interrupt" and (
+            isinstance(self.screen, TextViewScreen)
+            or getattr(self.screen, "selections", {})
+            or isinstance(self.focused, Input) and self.focused.selected_text
+        ):
+            # Let the TextArea/Screen copy binding receive Ctrl+C.
+            return None
         custom = {
             "nav_up",
             "nav_down",
@@ -336,6 +350,7 @@ class MyAssistantTUI(App):
             "escape",
             "transcript_page_up",
             "transcript_page_down",
+            "text_view",
         }
         if action in custom:
             # A modal overlay (e.g. the model/thread picker) is on top — never
@@ -352,6 +367,7 @@ class MyAssistantTUI(App):
                 "escape",
                 "transcript_page_up",
                 "transcript_page_down",
+                "text_view",
             }:
                 return True
             return True if self._palette_open else None
@@ -482,6 +498,8 @@ class MyAssistantTUI(App):
             self.exit()
         elif name == "help":
             self._dispatch(SystemMessage(_HELP_TEXT))
+        elif name == "copy":
+            self._show_text_view(args.strip() or "all")
         elif name == "new":
             if self._streaming:
                 self._dispatch_still_working()
@@ -860,13 +878,41 @@ class MyAssistantTUI(App):
                 result = self.session.client.export_workspace_file(self._workspace_context, parts[1])
                 self._dispatch(SystemMessage("Explicit snapshot export:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 return
-            if action in {"diff", "apply"}:
+            if action in {"diff", "apply", "refresh", "conflicts", "resolve"}:
                 if not self._workspace_context or not self._conv_thread_id:
                     raise ValueError("Open a Workspace thread before reviewing Docker changes")
                 client = self.session.client
                 thread = self._conv_thread_id
                 workspace = self._workspace_context
-                if action == "diff" and len(parts) == 1:
+                if action == "conflicts" and len(parts) == 1:
+                    conflicts = client.list_workspace_conflicts(thread, workspace)
+                    self._dispatch(SystemMessage(json.dumps(conflicts, ensure_ascii=False, indent=2) if conflicts else "No Workspace conflicts."))
+                    if len(conflicts) == 1:
+                        self._open_conflict_review(conflicts[0]["path"])
+                    elif conflicts:
+                        def choose_file(path):
+                            if path is not None and thread == self._conv_thread_id and workspace == self._workspace_context:
+                                self._open_conflict_review(path)
+                        self.push_screen(SelectScreen("选择要处理的冲突文件", [(item["path"], item["path"]) for item in conflicts]), choose_file)
+                elif action == "conflicts" and len(parts) == 2:
+                    review = client.review_workspace_conflict(thread, workspace, parts[1])
+                    self._dispatch(SystemMessage(f"正在审阅 {parts[1]} 的本地与沙箱版本，请在弹窗中选择处理方式。"))
+                    self._open_conflict_review(parts[1], review)
+                elif action == "resolve" and len(parts) == 4:
+                    result = client.resolve_workspace_conflict(thread, workspace, parts[1], parts[2], parts[3])
+                    label = "已保留本地版本并同步到沙箱。" if parts[2] == "local" else "已采用沙箱版本，本地已更新。"
+                    self._dispatch(SystemMessage(label + "双方原版本已备份。\n" + json.dumps(result, ensure_ascii=False, indent=2)))
+                elif action == "refresh" and (len(parts) == 1 or parts[1:] == ["--dry-run"]):
+                    preview = len(parts) == 2
+                    result = client.refresh_workspace_copy(thread, workspace, dry_run=preview)
+                    headline = (
+                        "Refresh blocked by conflicts; no files changed."
+                        if result["conflicts"] else
+                        "Host-to-sandbox refresh preview; no files changed."
+                        if preview else "Host changes refreshed into the sandbox copy."
+                    )
+                    self._dispatch(SystemMessage(headline + "\n" + json.dumps(result, ensure_ascii=False, indent=2)))
+                elif action == "diff" and len(parts) == 1:
                     changes = client.diff_workspace_copy(thread, workspace)
                     self._dispatch(SystemMessage(json.dumps(changes, ensure_ascii=False, indent=2) if changes else "No Docker Workspace changes."))
                 elif action == "diff" and len(parts) == 2:
@@ -874,9 +920,9 @@ class MyAssistantTUI(App):
                     self._dispatch(SystemMessage(f"{review['diff']}\nSHA-256 {review['sha256']}"))
                 elif action == "apply" and len(parts) == 3:
                     path = client.apply_workspace_copy(thread, workspace, parts[1], parts[2])
-                    self._dispatch(SystemMessage(f"Applied Docker Workspace change to {path}."))
+                    self._dispatch(SystemMessage(f"本地已更新（已审核写回）：{path}。"))
                 else:
-                    raise ValueError("Usage: /workspace diff [path] or /workspace apply <path> <sha256>")
+                    raise ValueError("Usage: /workspace refresh [--dry-run], diff [path], apply <path> <sha256>, conflicts [path], resolve <path> local|sandbox <token>")
                 return
             if action == "exports" and len(parts) == 1:
                 self._dispatch(SystemMessage(json.dumps(self.session.client.list_workspace_exports(), ensure_ascii=False, indent=2)))
@@ -894,9 +940,69 @@ class MyAssistantTUI(App):
                 self._dispatch(SystemMessage("Snapshot attached; tell the assistant to read this path. No live source access:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 self._refresh_header()
                 return
-            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|diff [path]|apply <path> <sha256>|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
+            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|refresh [--dry-run]|diff [path]|apply <path> <sha256>|conflicts [path]|resolve <path> local|sandbox <token>|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
         except Exception as exc:  # noqa: BLE001 - registry/parse failures must not terminate TUI
             self._dispatch(SystemMessage(f"Workspace: {exc}", tone="error"))
+
+    def _open_conflict_review(self, path: str, review: dict | None = None) -> None:
+        import json
+
+        thread = self._conv_thread_id
+        workspace = copy.deepcopy(self._workspace_context)
+        if self._streaming:
+            self._dispatch_still_working()
+            return
+        if not thread or not workspace:
+            return
+        try:
+            review = review or self.session.client.review_workspace_conflict(thread, workspace, path)
+        except Exception as exc:  # noqa: BLE001 - scope or files may change while a picker is open
+            self._dispatch(SystemMessage(f"无法打开冲突审阅：{exc}", tone="error"))
+            return
+
+        def choose_version(choice):
+            if choice is None:
+                return
+            if self._streaming:
+                self._dispatch_still_working()
+                return
+            if thread != self._conv_thread_id or workspace != self._workspace_context:
+                self._dispatch(SystemMessage("线程或工作区已改变，请重新查看冲突。", tone="error"))
+                return
+            try:
+                result = self.session.client.resolve_workspace_conflict(thread, workspace, path, choice, review["resolution_token"])
+            except Exception as exc:  # noqa: BLE001 - keep user-controlled resolution failures visible
+                self._dispatch(SystemMessage(f"未应用选择：{exc}\n请重新 /workspace conflicts 查看最新版本。", tone="error"))
+                return
+            label = "已保留本地版本并同步到沙箱。" if choice == "local" else "已采用沙箱版本，本地已更新。"
+            self._dispatch(SystemMessage(label + "双方原版本已备份。\n" + json.dumps(result, ensure_ascii=False, indent=2)))
+
+        self.push_screen(ConflictReviewScreen(review), choose_version)
+
+    def copy_to_clipboard(self, text: str) -> None:
+        # Keep Textual's clipboard/terminal fallback (also used for paste), and
+        # use the native Windows clipboard when terminal OSC 52 is unsupported.
+        super().copy_to_clipboard(text)
+        try:
+            native = copy_native_text(text)
+        except (OSError, subprocess.SubprocessError):
+            native = False
+        self.notify("已复制到系统剪贴板。" if native else "已向终端发送复制请求；如未生效，可在文本视图中重试。", timeout=3)
+
+    def _show_text_view(self, mode: str = "all") -> None:
+        if mode not in {"all", "last"}:
+            self._dispatch(SystemMessage("Usage: /copy [all|last]", tone="error"))
+            return
+        text = transcript_text(self.state, last=(mode == "last"))
+        if mode == "all":
+            progress = selectable_rich_text(render_progress(self.state, enabled=self._plan_enabled, preview=self._preview_next), self.console, 120).plain
+            status = render_status(self.state, model=self._model, thread_label=self._thread_label()).plain
+            header = f"线程：{self._conv_thread_id or '新线程'}\n模型：{self._model or '默认'}\n工作区：{(self._workspace_context or {}).get('root_path', '线程存储')}\n"
+            text = header + "\n" + progress + "\n" + text + "\n\n" + status
+        self.push_screen(TextViewScreen(text, "全部终端文字" if mode == "all" else "最近一条消息"))
+
+    def action_text_view(self) -> None:
+        self._show_text_view()
 
     def _restore_thread_state(self, thread_id: str) -> bool:
         """Load a saved transcript without letting one bad checkpoint stop the TUI."""
@@ -1472,7 +1578,9 @@ class MyAssistantTUI(App):
             self.exit()
 
     def action_escape(self) -> None:
-        if self._palette_open:
+        if self.screen.selections:
+            self.screen.clear_selection()
+        elif self._palette_open:
             self._close_palette()
         elif self._streaming:
             self._interrupt_run()

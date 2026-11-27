@@ -643,6 +643,14 @@ def build_middlewares(
     # stamps its own policy-denial receipts before all effectful tool layers.
     middlewares.insert(1, TaskWorkflowMiddleware(receipts_enabled=resolved_app_config.verification.receipts_enabled))
 
+    from my_assistant.agents.middlewares.file_delivery_middleware import (
+        WorkspaceDeliveryMiddleware,
+    )
+
+    # after_agent hooks run in reverse order: the verified file status is the
+    # final visible message, including ordinary turns without a TaskState.
+    middlewares.insert(1, WorkspaceDeliveryMiddleware(resolved_app_config))
+
     # Always inject current date (and optionally memory) as <system-reminder> into the
     # first HumanMessage to keep the system prompt fully static for prefix-cache reuse.
     from my_assistant.agents.middlewares.dynamic_context_middleware import (

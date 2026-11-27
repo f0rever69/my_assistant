@@ -1796,6 +1796,14 @@ class MyAssistantClient(WorkspaceClientMixin, WorkflowClientMixin):
             elif event.type == "end" and isinstance(event.data.get("error"), str):
                 run_error = event.data["error"]
         response = "".join(chunks.get(last_id, ()))
+        from my_assistant.sandbox.file_effects import DELIVERY_MESSAGE_PREFIX
+
+        if last_id.startswith(DELIVERY_MESSAGE_PREFIX) and len(chunks) > 1:
+            # The verifier is a separate, final AI message. Preserve the last
+            # model answer (reports/code explanations) and its authoritative
+            # file-status suffix, rather than returning only the suffix.
+            previous_id = next(key for key in reversed(chunks) if key != last_id)
+            response = "".join(chunks[previous_id]) + "\n\n" + response
         if run_error:
             return f"{response}\n\n{run_error}" if response else run_error
         return response

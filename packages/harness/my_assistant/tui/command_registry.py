@@ -39,6 +39,7 @@ BUILTIN_COMMANDS: tuple[Command, ...] = (
     Command("help", "Show commands and keybindings"),
     Command("new", "Start a fresh thread"),
     Command("clear", "Clear the transcript display"),
+    Command("copy", "Open selectable text for copying: /copy [all|last]"),
     Command("resume", "Choose a saved thread or resume by id or title"),
     Command("workspace", "Select, register, configure, migrate or reference a Workspace"),
     Command("writes", "Inspect, recover or undo file writes"),

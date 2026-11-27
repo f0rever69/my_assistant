@@ -63,7 +63,7 @@ my_assistant = "my_assistant.tui.cli:main"
 [project.optional-dependencies]
 # Terminal workbench (TUI). Kept optional so the core harness install stays lean;
 # the `my_assistant` console script degrades to headless help when textual is absent.
-tui = ["textual>=0.80"]
+tui = ["textual>=8.2.8"]
 # GroundRoute needs no extra packages (httpx is already a core dependency). This
 # empty extra exists so the documented `uv add 'my_assistant-harness[groundroute]'`
 # install command resolves cleanly without an "unknown extra" warning.

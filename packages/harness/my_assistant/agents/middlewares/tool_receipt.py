@@ -36,11 +36,12 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, ToolMessage
 
 from my_assistant.agents.middlewares.tool_result_meta import TOOL_META_KEY
+from my_assistant.sandbox.file_effects import FILE_EFFECT_KEY, valid_file_effect
 
 TOOL_RECEIPT_KEY = "my_assistant_tool_receipt"
 TOOL_RECEIPT_LEDGER_KEY = "my_assistant_tool_receipt_ledger"
@@ -99,6 +100,7 @@ class ToolReceipt(TypedDict):
     output_sha256: str
     output_bytes: int
     created_at: str
+    file_effect: NotRequired[dict]
 
 
 def _short_hash(data: bytes) -> str:
@@ -112,7 +114,7 @@ def make_tool_receipt(tool_call: dict, message: ToolMessage) -> dict:
     content = message.content if isinstance(message.content, str) else json.dumps(message.content, sort_keys=True, default=str)
     meta = (message.additional_kwargs or {}).get(TOOL_META_KEY) or {}
     status = str(meta.get("status") or getattr(message, "status", "success") or "success")
-    return {
+    receipt = {
         "tool_call_id": str(tool_call.get("id") or ""),
         "tool_name": str(tool_call.get("name") or ""),
         "status": status,
@@ -121,6 +123,10 @@ def make_tool_receipt(tool_call: dict, message: ToolMessage) -> dict:
         "output_bytes": len(content.encode("utf-8")),
         "created_at": datetime.now(UTC).isoformat(),
     }
+    effect = (message.additional_kwargs or {}).get(FILE_EFFECT_KEY)
+    if valid_file_effect(effect):
+        receipt["file_effect"] = dict(effect)
+    return receipt
 
 
 def extract_tool_receipts(messages: list) -> list[ToolReceipt]:
@@ -148,6 +154,7 @@ def extract_tool_receipts(messages: list) -> list[ToolReceipt]:
                 output_sha256=receipt["output_sha256"],
                 output_bytes=receipt["output_bytes"],
                 created_at=receipt["created_at"],
+                **({"file_effect": dict(receipt["file_effect"])} if "file_effect" in receipt else {}),
             )
         )
     return receipts
@@ -192,6 +199,7 @@ def extract_citing_turn_receipts(messages: list) -> list[ToolReceipt] | None:
                     output_sha256=receipt["output_sha256"],
                     output_bytes=receipt["output_bytes"],
                     created_at=receipt["created_at"],
+                    **({"file_effect": dict(receipt["file_effect"])} if "file_effect" in receipt else {}),
                 )
             )
         return receipts
@@ -206,6 +214,8 @@ def is_valid_receipt(receipt: object) -> bool:
     if not isinstance(receipt, dict):
         return False
     if any(not isinstance(receipt.get(field), str) for field in _RECEIPT_STR_FIELDS):
+        return False
+    if "file_effect" in receipt and not valid_file_effect(receipt["file_effect"]):
         return False
     output_bytes = receipt.get("output_bytes")
     return isinstance(output_bytes, int) and not isinstance(output_bytes, bool)
@@ -234,7 +244,13 @@ def render_tool_receipts_with_snapshot(
         # evidence boundary so the model never reads provenance as endorsement.
         "Execution evidence only — receipts record that a call happened and its status; they do not validate claim correctness or task acceptance.",
     ]
-    receipt_lines = [f"- [{receipt['id']}] {receipt['tool_name']} status={receipt['status']} args_sha256={receipt['args_sha256']} output_sha256={receipt['output_sha256']} bytes={receipt['output_bytes']}" for receipt in receipts]
+    receipt_lines = []
+    for receipt in receipts:
+        line = f"- [{receipt['id']}] {receipt['tool_name']} status={receipt['status']} args_sha256={receipt['args_sha256']} output_sha256={receipt['output_sha256']} bytes={receipt['output_bytes']}"
+        effect = receipt.get("file_effect")
+        if valid_file_effect(effect):
+            line += f" storage_scope={effect['storage_scope']} sync_status={effect['sync_status']} path={json.dumps(effect['path'], ensure_ascii=False)}"
+        receipt_lines.append(line)
     if len("\n".join([*lines, *receipt_lines])) <= max_chars:
         lines.extend(receipt_lines)
         retained_receipts = receipts

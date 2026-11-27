@@ -36,7 +36,7 @@ dev = [
     "ruff>=0.14.11",
     # TUI runtime dep (also the my_assistant-harness[tui] extra); kept in the dev
     # group so the terminal workbench can be run locally.
-    "textual>=0.80",
+    "textual>=8.2.8",
 ]
 
 [tool.uv]

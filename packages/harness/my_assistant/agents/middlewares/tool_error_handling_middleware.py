@@ -233,6 +233,12 @@ def _build_runtime_middlewares(
 
         tail.append(ToolReceiptMiddleware(render_mode=receipts_render_mode))
 
+    from my_assistant.agents.middlewares.file_delivery_middleware import (
+        FileEffectMiddleware,
+    )
+
+    tail.append(FileEffectMiddleware(app_config))
+
     # Authorization uses the existing GuardrailMiddleware so execution-time
     # deny, audit, and fail-closed handling stay in one proven implementation.
     # It is appended before an explicit guardrail provider, making authorization

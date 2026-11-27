@@ -459,6 +459,244 @@ def test_cli_registration_and_selection_reuse_policy(catalog):
     assert registry.resolve(alpha.id).shell_enabled
 
 
+def test_client_refresh_checks_workspace_binding_and_current_policy(catalog):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+
+    registry, alpha, beta = catalog
+    client = LocalClient()
+    client.check_thread_workspace("refresh", workspace=alpha.to_context(), bind=True)
+    copy = prepare_workspace_copy(alpha, "refresh", "default")
+    (alpha.root / "new.txt").write_text("new host file", encoding="utf-8")
+    preview = client.refresh_workspace_copy("refresh", alpha.to_context(), dry_run=True)
+    assert preview["changes"] and not preview["applied"]
+    assert not (copy / "new.txt").exists()
+    with pytest.raises(WorkspaceMismatch):
+        client.refresh_workspace_copy("refresh", beta.to_context())
+    assert client.refresh_workspace_copy("refresh", alpha.to_context())["applied"]
+    assert (copy / "new.txt").read_text(encoding="utf-8") == "new host file"
+    registry.update(alpha.id, allowed_read_paths=[])
+    with pytest.raises(WorkspaceUnavailable, match="policy changed"):
+        client.refresh_workspace_copy("refresh", alpha.to_context())
+
+
+@pytest.mark.asyncio
+async def test_tui_refresh_previews_applies_and_blocks_during_run(catalog, ui_client, monkeypatch):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+    from my_assistant.tui.app import MyAssistantTUI
+    from my_assistant.tui.cli import LaunchPlan
+
+    _, alpha, _ = catalog
+    ui_client.set_task("refresh-ui", "check files", workspace=alpha.to_context())
+    copy = prepare_workspace_copy(alpha, "refresh-ui", "default")
+    (alpha.root / "test.txt").write_text("added after initial copy", encoding="utf-8")
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id="refresh-ui", workspace_id=alpha.id))
+    calls = []
+    refresh = ui_client.refresh_workspace_copy
+
+    def tracked(thread, workspace, **kwargs):
+        calls.append((thread, workspace["id"], kwargs["dry_run"]))
+        return refresh(thread, workspace, **kwargs)
+
+    monkeypatch.setattr(ui_client, "refresh_workspace_copy", tracked)
+    async with app.run_test(size=(100, 28)) as pilot:
+        await pilot.pause()
+        app._handle_workspace("refresh --dry-run")
+        assert not (copy / "test.txt").exists()
+        app._handle_workspace("refresh")
+        assert (copy / "test.txt").read_text(encoding="utf-8") == "added after initial copy"
+        app._handle_workspace("refresh --force")
+        app._streaming = True
+        app._handle_workspace("refresh")
+        app._streaming = False
+        assert calls == [("refresh-ui", alpha.id, True), ("refresh-ui", alpha.id, False)]
+        assert app._conv_thread_id == "refresh-ui"
+
+
+@pytest.mark.asyncio
+async def test_tui_conflict_review_and_explicit_resolution(catalog, ui_client, monkeypatch):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+    from my_assistant.tui.app import MyAssistantTUI
+    from my_assistant.tui.cli import LaunchPlan
+
+    _, alpha, _ = catalog
+    (alpha.root / "test.txt").write_text("base")
+    ui_client.set_task("resolve-ui", "edit file", workspace=alpha.to_context())
+    copy = prepare_workspace_copy(alpha, "resolve-ui", "default")
+    (alpha.root / "test.txt").write_text("local version")
+    (copy / "test.txt").write_text("agent version")
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id="resolve-ui", workspace_id=alpha.id))
+    async with app.run_test(size=(100, 28)) as pilot:
+        await pilot.pause()
+        shown = []
+        monkeypatch.setattr(app, "_dispatch", shown.append)
+        app._handle_workspace("conflicts")
+        assert "test.txt" in shown[-1].text
+        await pilot.pause()
+        await pilot.press("escape")
+        app._handle_workspace("conflicts test.txt")
+        review = ui_client.review_workspace_conflict("resolve-ui", alpha.to_context(), "test.txt")
+        token = review["resolution_token"]
+        await pilot.pause()
+        assert token in app.screen.text and "/workspace resolve" in app.screen.text
+        await pilot.press("escape")
+        app._handle_workspace("resolve test.txt sandbox stale-token")
+        assert (alpha.root / "test.txt").read_text() == "local version"
+        app._streaming = True
+        app._handle_workspace(f"resolve test.txt sandbox {token}")
+        assert (alpha.root / "test.txt").read_text() == "local version"
+        app._streaming = False
+        app._handle_workspace(f"resolve test.txt sandbox {token}")
+        assert (alpha.root / "test.txt").read_text() == "agent version"
+        assert "本地已更新" in shown[-1].text
+        assert app._conv_thread_id == "resolve-ui"
+
+
+@pytest.fixture
+def conflict_ui(catalog, ui_client, monkeypatch):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+    from my_assistant.tui.app import MyAssistantTUI
+    from my_assistant.tui.cli import LaunchPlan
+
+    _, alpha, _ = catalog
+    filename = "中文 file.txt"
+    (alpha.root / filename).write_text("base", encoding="utf-8")
+    ui_client.set_task("conflict-modal", "edit file", workspace=alpha.to_context())
+    copy = prepare_workspace_copy(alpha, "conflict-modal", "default")
+    (alpha.root / filename).write_text("local version", encoding="utf-8")
+    (copy / filename).write_text("sandbox version", encoding="utf-8")
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id="conflict-modal", workspace_id=alpha.id))
+    monkeypatch.setattr("my_assistant.tui.app.copy_native_text", lambda text: True)
+    return app, alpha, copy, filename
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("choice", ["local", "sandbox"])
+@pytest.mark.parametrize("interaction", ["button", "keyboard"])
+async def test_conflict_dialog_automatically_carries_reviewed_token(conflict_ui, ui_client, monkeypatch, choice, interaction):
+    from my_assistant.tui.text_widgets import ConflictReviewScreen
+    from rich.cells import cell_len
+    from textual.widgets import Button, TextArea
+
+    app, alpha, copy, filename = conflict_ui
+    calls = []
+    resolve = ui_client.resolve_workspace_conflict
+
+    def tracked(*args):
+        result = resolve(*args)
+        calls.append((args, result))
+        return result
+
+    monkeypatch.setattr(ui_client, "resolve_workspace_conflict", tracked)
+    async with app.run_test(size=(80, 24) if interaction == "keyboard" else (100, 28)) as pilot:
+        app._handle_workspace(f'conflicts "{filename}"')
+        await pilot.pause()
+        assert isinstance(app.screen, ConflictReviewScreen)
+        assert app.focused.id == "conflict-cancel"
+        token = ui_client.review_workspace_conflict("conflict-modal", alpha.to_context(), filename)["resolution_token"]
+        assert token in app.screen.query_one(TextArea).text
+        for button in app.screen.query(Button):
+            assert button.region.bottom <= app.screen.size.height
+            assert button.content_size.width >= cell_len(str(button.label))
+        # Ctrl+A must focus the read-only text even though Cancel starts focused.
+        await pilot.press("ctrl+a", "ctrl+c")
+        assert token in app.clipboard and "local version" in app.clipboard and "sandbox version" in app.clipboard
+        assert calls == []
+        if interaction == "button":
+            await pilot.click(f"#conflict-{choice}")
+        else:
+            await pilot.press("l" if choice == "local" else "s")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert len(calls) == 1
+        assert calls[0][0] == ("conflict-modal", alpha.to_context(), filename, choice, token)
+        expected = "local version" if choice == "local" else "sandbox version"
+        assert (alpha.root / filename).read_text(encoding="utf-8") == expected
+        assert (copy / filename).read_text(encoding="utf-8") == expected
+        assert ui_client.list_workspace_conflicts("conflict-modal", alpha.to_context()) == []
+        assert "双方原版本已备份" in app.state.rows[-1].text
+        assert ("已保留本地版本" if choice == "local" else "本地已更新") in app.state.rows[-1].text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", ["enter", "escape", "button"])
+async def test_conflict_dialog_cancel_and_default_enter_do_not_change_files(conflict_ui, ui_client, monkeypatch, cancel):
+    app, alpha, copy, filename = conflict_ui
+    calls = []
+    monkeypatch.setattr(ui_client, "resolve_workspace_conflict", lambda *args: calls.append(args))
+    async with app.run_test(size=(80, 24)) as pilot:
+        app._handle_workspace("conflicts")
+        await pilot.pause()
+        if cancel == "button":
+            await pilot.click("#conflict-cancel")
+        else:
+            await pilot.press(cancel)
+        await pilot.pause()
+        assert len(app.screen_stack) == 1 and calls == []
+        assert (alpha.root / filename).read_text(encoding="utf-8") == "local version"
+        assert (copy / filename).read_text(encoding="utf-8") == "sandbox version"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", ["host", "sandbox", "policy", "thread", "workspace", "streaming"])
+async def test_conflict_dialog_rejects_changed_versions_or_scope(conflict_ui, catalog, changed):
+    app, alpha, copy, filename = conflict_ui
+    registry, _, beta = catalog
+    async with app.run_test(size=(100, 28)) as pilot:
+        app._handle_workspace(f'conflicts "{filename}"')
+        await pilot.pause()
+        if changed == "host":
+            (alpha.root / filename).write_text("new host edit", encoding="utf-8")
+        elif changed == "sandbox":
+            (copy / filename).write_text("new sandbox edit", encoding="utf-8")
+        elif changed == "policy":
+            registry.update(alpha.id, allowed_write_paths=[])
+        elif changed == "thread":
+            app._conv_thread_id = "another-thread"
+        elif changed == "workspace":
+            app._workspace_context = beta.to_context()
+        else:
+            app._streaming = True
+        local_before, sandbox_before = (alpha.root / filename).read_bytes(), (copy / filename).read_bytes()
+        await pilot.click("#conflict-sandbox")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert (alpha.root / filename).read_bytes() == local_before
+        assert (copy / filename).read_bytes() == sandbox_before
+        message = app.state.rows[-1].text
+        assert "未应用选择" in message or "已改变" in message or "Still working" in message
+        app._streaming = False
+
+
+@pytest.mark.asyncio
+async def test_multiple_conflicts_choose_file_then_review_fresh(conflict_ui, ui_client, monkeypatch):
+    from my_assistant.tui.app import SelectScreen
+    from my_assistant.tui.text_widgets import ConflictReviewScreen
+
+    app, alpha, copy, _ = conflict_ui
+    (alpha.root / "second.txt").write_text("second host")
+    (copy / "second.txt").write_text("second sandbox")
+    async with app.run_test(size=(100, 28)) as pilot:
+        app._handle_workspace("conflicts")
+        await pilot.pause()
+        assert isinstance(app.screen, SelectScreen)
+        app.screen.dismiss("second.txt")
+        await pilot.pause()
+        assert isinstance(app.screen, ConflictReviewScreen)
+        assert "文件：second.txt" in app.screen.text
+        await pilot.press("escape")
+        app._handle_workspace("conflicts")
+        await pilot.pause()
+
+        def unavailable(*args):
+            raise ValueError("file changed while choosing")
+
+        monkeypatch.setattr(ui_client, "review_workspace_conflict", unavailable)
+        app.screen.dismiss("second.txt")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert "无法打开冲突审阅" in app.state.rows[-1].text
+
+
 @pytest.mark.parametrize("mode", ["full", "delta"])
 def test_task_goal_writes_preserve_binding_and_message_ancestry(catalog, mode):
     from my_assistant.runtime.goal import build_goal_state, write_thread_goal

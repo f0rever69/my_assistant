@@ -11,8 +11,12 @@ from my_assistant.sandbox.file_transactions import FileTransactionConflict
 from my_assistant.sandbox.workspace_copy import (
     apply_workspace_copy,
     prepare_workspace_copy,
+    refresh_workspace_copy,
+    resolve_workspace_conflict,
+    review_workspace_conflict,
     review_workspace_copy,
     workspace_copy_diff,
+    workspace_copy_status,
 )
 
 
@@ -70,6 +74,53 @@ def test_filtered_copy_and_reviewed_write_back(workspace):
     assert not (
         prepare_workspace_copy(workspace, "other-thread", owner) / "outside.txt"
     ).exists()
+
+
+@pytest.mark.skipif(
+    os.environ.get("MY_ASSISTANT_TEST_DOCKER") != "1",
+    reason="requires local Docker and AIO image",
+)
+def test_live_copy_refresh_keeps_mount_and_sandbox_edits(workspace, monkeypatch):
+    from my_assistant.community.aio_sandbox import AioSandboxProvider
+    from my_assistant.config import get_app_config
+
+    monkeypatch.setattr(get_app_config().sandbox, "container_prefix", f"ma-refresh-{uuid.uuid4().hex[:10]}")
+    provider = AioSandboxProvider()
+    thread, owner = "live-refresh", "default"
+    root = "/mnt/user-data/workspace/docs"
+    try:
+        with workspace_scope(workspace):
+            sandbox_id = provider.acquire(thread, user_id=owner)
+        sandbox = provider.get(sandbox_id)
+        assert sandbox.read_file(f"{root}/sample.txt").strip() == "project source"
+        sandbox.write_file(f"{root}/agent.txt", "sandbox-only work")
+        (workspace.root / "docs/sample.txt").write_text("new host version", encoding="utf-8")
+        (workspace.root / "docs/test.txt").write_text("added after mount", encoding="utf-8")
+
+        result = refresh_workspace_copy(workspace, thread, owner)
+
+        assert result["applied"] and result["preserved"] == ["docs/agent.txt"]
+        assert sandbox.read_file(f"{root}/test.txt").strip() == "added after mount"
+        assert sandbox.read_file(f"{root}/sample.txt").strip() == "new host version"
+        assert sandbox.read_file(f"{root}/agent.txt").strip() == "sandbox-only work"
+        assert not (workspace.root / "docs/agent.txt").exists()
+        sandbox.write_file(f"{root}/sample.txt", "agent update")
+        (workspace.root / "docs/sample.txt").write_text("host update", encoding="utf-8")
+        conflict = refresh_workspace_copy(workspace, thread, owner)
+        assert not conflict["applied"] and conflict["conflicts"]
+        assert sandbox.read_file(f"{root}/sample.txt").strip() == "agent update"
+        review = review_workspace_conflict(workspace, thread, owner, "docs/sample.txt")
+        resolved = resolve_workspace_conflict(workspace, thread, owner, "docs/sample.txt", "sandbox", review["resolution_token"])
+        assert resolved["status"] == "host_updated"
+        assert (workspace.root / "docs/sample.txt").read_text() == "agent update"
+        assert any(item["status"] == "host_updated" for item in workspace_copy_status(workspace, thread, owner)["files"])
+        (workspace.root / "docs/sample.txt").write_text("keep local", encoding="utf-8")
+        sandbox.write_file(f"{root}/sample.txt", "discard agent")
+        review = review_workspace_conflict(workspace, thread, owner, "docs/sample.txt")
+        resolve_workspace_conflict(workspace, thread, owner, "docs/sample.txt", "local", review["resolution_token"])
+        assert sandbox.read_file(f"{root}/sample.txt").strip() == "keep local"
+    finally:
+        provider.shutdown()
 
 
 @pytest.mark.skipif(
@@ -300,6 +351,7 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
         )
 
     config = get_app_config()
+    monkeypatch.setattr(config.sandbox, "container_prefix", f"ma-delivery-cli-{uuid.uuid4().hex[:10]}")
     monkeypatch.setattr(config.memory, "enabled", False)
     monkeypatch.setattr(config.title, "enabled", False)
     monkeypatch.setattr(config.database, "sqlite_dir", str(workspace.root.parent / "db"))
@@ -332,7 +384,9 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
             )
             == 0
         )
-        assert "Docker CLI verified" in capsys.readouterr().out
+        answer = capsys.readouterr().out
+        assert "Docker CLI verified" in answer
+        assert "沙箱已修改，尚未写回本地" in answer
         assert not (workspace.root / "docs" / "cli.txt").exists()
         output = workspace.runtime_dir(thread) / "outputs" / "cli.txt"
         assert output.read_text(encoding="utf-8") == "output artifact"
@@ -340,6 +394,11 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
         assert not provider._warm_pool
         session = open_session(persistence=False)
         try:
+            from my_assistant.sandbox.file_effects import FILE_EFFECT_KEY
+
+            _, _, state = session.client._workspace_state(thread)
+            effects = [message.additional_kwargs.get(FILE_EFFECT_KEY) for message in state["messages"] if isinstance(message, ToolMessage)]
+            assert any(effect and effect["sync_status"] == "host_update_not_proven" for effect in effects)
             context = registered.to_context()
             changes = session.client.diff_workspace_copy(thread, context)
             assert [change["path"] for change in changes] == ["docs/cli.txt"]

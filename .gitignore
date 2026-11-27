@@ -10,6 +10,7 @@ __pycache__/
 /sandbox/
 /logs/
 /benchmarks/results/
+/test_demo/
 
 # Secrets and machine-local runtime config.
 .env

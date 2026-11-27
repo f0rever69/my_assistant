@@ -104,6 +104,15 @@ class WorkspaceClientMixin:
 
         return workspace_copy_diff(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id())
 
+    def refresh_workspace_copy(self, thread_id: str, workspace: dict, *, dry_run: bool = False) -> dict:
+        """Refresh an idle thread's Docker copy without writing the host Workspace."""
+        from my_assistant.sandbox.workspace_copy import refresh_workspace_copy
+
+        return refresh_workspace_copy(
+            self._docker_workspace(thread_id, workspace), thread_id,
+            get_effective_user_id(), dry_run=dry_run,
+        )
+
     def review_workspace_copy(self, thread_id: str, workspace: dict, path: str) -> dict[str, str]:
         from my_assistant.sandbox.workspace_copy import review_workspace_copy
 
@@ -113,6 +122,23 @@ class WorkspaceClientMixin:
         from my_assistant.sandbox.workspace_copy import apply_workspace_copy
 
         return apply_workspace_copy(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path, sha256)
+
+    def list_workspace_conflicts(self, thread_id: str, workspace: dict) -> list[dict]:
+        from my_assistant.sandbox.workspace_copy import workspace_copy_status
+
+        status = workspace_copy_status(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id())
+        return [item for item in status["files"] if item["status"] == "conflict"]
+
+    def review_workspace_conflict(self, thread_id: str, workspace: dict, path: str) -> dict:
+        from my_assistant.sandbox.workspace_copy import review_workspace_conflict
+
+        return review_workspace_conflict(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path)
+
+    def resolve_workspace_conflict(self, thread_id: str, workspace: dict, path: str, choice: str, token: str) -> dict:
+        """Trusted, idle user action; never exposed as an autonomous model tool."""
+        from my_assistant.sandbox.workspace_copy import resolve_workspace_conflict
+
+        return resolve_workspace_conflict(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path, choice, token)
 
     def reference_workspace_export(self, thread_id, workspace, export_id):
         import json

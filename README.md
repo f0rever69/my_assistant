@@ -49,6 +49,10 @@ uv run my_assistant --workspace D:\projects\my-project
 
 使用 `--workspace` 时，Agent 还可以用 FTS5 搜索工作区文本文件；工具会合并模型生成的多组关键词查询，再返回标题、命中片段和可供 `read_file` 使用的虚拟路径。中文默认使用 jieba 分词，并叠加字符二元词提高相近表述的召回；若 jieba 不可用，则退回字符二元词检索。
 
+终端对话、工具回执、进度和状态文字支持鼠标拖选，再按 `Ctrl+C` 复制；输入框的已选文字也可直接复制。有选中文字时，复制不会中断任务；没有选中时，`Ctrl+C` 仍用于中断或退出。按 `Esc` 先取消文字选择。
+
+按 `F8` 或输入 `/copy`（也可 `/copy all`）打开只读文本视图，支持鼠标选择、`Ctrl+A` 全选、`Ctrl+C` 复制及“复制全文”按钮，`Esc` 关闭；`/copy last` 只查看最近一条消息。复制长命令、代码及令牌时推荐使用文本视图，其保留原始消息换行，软换行不会进入剪贴板。视图是打开时的快照，后台任务继续运行。Windows 优先写入系统剪贴板，其他平台通过终端的 OSC 52 机制发送复制请求（取决于终端支持）。
+
 ## Workspace 注册与线程隔离
 
 首次使用项目目录时，`--workspace PATH` 会在当前用户的本地注册表中创建稳定的
@@ -67,6 +71,9 @@ TUI 中使用 `/workspace` 打开选择器，或使用下面的命令管理工�
 |---|---|
 | `/workspace list` | 列出当前用户的注册表、可用状态、根路径和能力策略 |
 | `/workspace show` | 显示当前选中工作区的完整策略 |
+| `/workspace refresh [--dry-run]` | 预览或将本地变化同步到当前线程的 Docker 工作副本；冲突时整次拒绝刷新 |
+| `/workspace conflicts [path]` | 打开冲突审阅弹窗，直接选择保留本地或采用沙箱写回；多个冲突先选择文件 |
+| `/workspace resolve <path> local\|sandbox <token>` | 备份双方版本后选择保留本地或沙箱；令牌绑定文件版本及当前用户、线程和策略 |
 | `/workspace add <path> [name]` | 注册本地目录并切换到它；同一路径会复用稳定 ID |
 | `/workspace use <id\|name\|local>` | 切换工作区，`local` 表示不绑定项目工作区 |
 | `/workspace return` | 切回当前线程原来绑定的工作区并继续查看该线程 |
@@ -99,9 +106,23 @@ TUI 中使用 `/workspace` 打开选择器，或使用下面的命令管理工�
 | `/mnt/user-data/outputs` | Workspace 的 `.my-assistant/threads/<线程ID>/outputs` | 读写 |
 | `/mnt/skills/...` | 已启用技能的投影目录 | 只读 |
 
-省略 `--workspace` 时，前三项映射到线程自己的 `user-data/workspace`、`user-data/uploads` 和 `user-data/outputs`。绑定 Workspace 后，首次创建副本会筛掉受保护文件及符号链接。副本随同一线程保留。宿主文件更新时可新建线程重新取样。
+省略 `--workspace` 时，前三项映射到线程自己的 `user-data/workspace`、`user-data/uploads` 和 `user-data/outputs`。绑定 Workspace 后，首次创建副本会筛掉受保护文件及符号链接，副本随同一线程保留。
+
+本地新增、修改或删除文件后，可在 Agent 空闲时执行 `/workspace refresh --dry-run` 预览，再用 `/workspace refresh` 同步到已有副本，无需重建线程或容器。刷新比较同步基线、本地文件和副本：仅本地变化时同步，仅副本变化时保留，两边变成相同内容时对齐基线；同一路径两边改成不同内容，或出现不安全路径、文件与目录类型冲突时，整次预检查拒绝刷新。返回 `changes`、`preserved` 和 `conflicts`，其中 `aligned` 表示两边已相同、只需更新基线。受保护文件、符号链接和读范围外文件仍不导入。该命令只修改副本及其基线，不写回本地源文件，也不清空沙箱独有文件。刷新与写回共用锁，每个文件原子替换并复核版本；磁盘错误等导致批次中断后可重试，但不提供跨文件崩溃原子性。TUI 在执行任务时拒绝刷新；Python 调用方也应确保该线程及其他直接写入副本的进程空闲。
+
+Python 嵌入式调用可使用 `client.refresh_workspace_copy(thread_id, workspace_context, dry_run=True)` 预览，以及 `client.refresh_workspace_copy(thread_id, workspace_context)` 执行。
 
 用 `/workspace diff` 查看变更列表，用 `/workspace diff <相对路径>` 查看文本差异和 SHA-256，然后用 `/workspace apply <相对路径> <SHA-256>` 将核对过的文件写回。写回检查权限、宿主文件原始版本和副本内容，事务状态可由现有文件恢复流程处理。删除会列在差异中，写回入口支持新增和修改。
+
+文件工具回执会包含 `storage_scope`、`sync_status`、虚拟路径及对应本地路径：写入 Workspace 副本标为 `sandbox_workspace_copy / pending_apply`，本地直接文件操作标为 `host_workspace / host_updated`，共享输出目录单独标为 `host_outputs`。Shell 成功只表示命令执行成功，不证明本地原文件已更新。这些位置事实同时进入结构化工具回执。
+
+回答前，运行时会读取实际文件状态；结束后还会追加一条“文件同步状态（程序核验）”，明确显示沙箱待写回、双方冲突、本地已写回等结果。判定同时检查当前字节及写回记录，不把“内容碰巧相同”或模型自行声称完成当作写回证明。流式界面保留模型正文，并在其后显示独立核验结果；Python `chat()` 返回正文和核验说明。目录扫描暂不可用时会明确标注无法核验。
+
+遇到冲突时，输入 `/workspace conflicts test.txt` 打开弹窗，查看双方差异及版本哈希，点击“保留本地”将本地版本同步到沙箱，或点击“采用沙箱写回”将沙箱版本写回本地。也可按 `L` / `S` 选择，按 `Esc` 取消；默认焦点为“取消”，直接回车不覆盖文件。程序自动携带本次审核的版本令牌，无需复制或手填。`/workspace conflicts` 在只有一个冲突时直接打开弹窗，多个冲突先选择文件；详情支持全选复制。
+
+选择某侧不存在的文件表示接受该侧的删除。冲突处理只允许在空闲时由用户执行，模型不能自行批准；审阅后任一文件、基线或策略变化都会使旧令牌失效，切换线程、工作区或开始任务后也拒绝执行旧选择，需重新审阅。覆盖或删除前，双方原内容及操作日志保存到该线程工作副本目录旁的 `conflict-backups/<操作ID>/`（不挂载给容器），处理结果返回具体备份路径。采用沙箱文件写回使用现有文件事务；删除保留独立备份和准备/完成日志。手工合并时，可先在编辑器中保存合并结果，再重新审核并选择该侧版本。原手动命令 `/workspace resolve <path> local|sandbox <token>` 仍可使用。
+
+对应嵌入式接口为 `list_workspace_conflicts`、`review_workspace_conflict` 和 `resolve_workspace_conflict`，同样校验线程归属、工作区策略和版本令牌。`resolve` 属于调用方明确授权的管理操作，不注册为模型工具。
 
 本机 Docker 沙箱启用内置 seccomp、CPU、内存和进程数限制。默认配置只开放内部控制面，容器应用的对外访问受到隔离网络限制。命令超时会终止容器，回合结束时释放容器并保留文件副本。
 
