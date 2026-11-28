@@ -104,10 +104,51 @@ def test_status_verifies_bytes_and_does_not_duplicate_final_notice(scene):
     runtime.state["messages"].append(AIMessage("本地已经更新"))
     middleware = WorkspaceDeliveryMiddleware(config)
     final = middleware.after_agent(runtime.state, runtime)["messages"][-1]
-    assert "沙箱已修改，尚未写回本地" in final.content
+    assert "沙箱副本已修改，尚未写回原工作区" in final.content
     assert (workspace.root / "test.txt").read_text() == "original"
     runtime.state["messages"].append(final)
     assert middleware.after_agent(runtime.state, runtime) is None
+
+
+def test_status_separates_outputs_from_original_workspace(scene):
+    workspace, copy, runtime, config = scene
+    name = "论文大纲.md"
+    outputs_dir = Path(workspace.ensure_runtime_dirs("thread")["outputs_path"])
+    (copy / name).write_bytes(b"draft in sandbox")
+    (outputs_dir / name).write_bytes(b"draft for delivery")
+    runtime.state["messages"].append(AIMessage("文档已经生成"))
+
+    final = WorkspaceDeliveryMiddleware(config).after_agent(runtime.state, runtime)["messages"][-1]
+    status = final.additional_kwargs["my_assistant_workspace_delivery"]
+    assert status["outputs"] == [{"path": f"/mnt/user-data/outputs/{name}", "host_path": (outputs_dir / name).as_posix()}]
+    assert status["files"][0]["status"] == "pending_apply"
+    assert "本地输出文件（已核实存在，可直接打开）" in final.content
+    assert (outputs_dir / name).as_posix() in final.content
+    assert workspace.root.as_posix() in final.content
+    assert "原工作区尚无此文件" in final.content
+    assert not (workspace.root / name).exists()
+
+
+def test_outputs_only_status_checks_reported_paths_in_current_thread(scene):
+    workspace, _, runtime, config = scene
+    outputs_dir = Path(workspace.ensure_runtime_dirs("thread")["outputs_path"])
+    (outputs_dir / "report.docx").write_bytes(b"report")
+    (outputs_dir / "folder").mkdir()
+    (outputs_dir / ".tool-results").mkdir()
+    (outputs_dir / ".tool-results/internal.txt").write_bytes(b"tool output")
+    runtime.state["artifacts"] = [
+        f"/mnt/user-data/outputs/{name}" for name in (
+            "report.docx", "missing.docx", "folder", "../test.txt", ".tool-results/internal.txt",
+        )
+    ]
+    runtime.state["messages"].append(AIMessage("文档已经生成"))
+
+    final = WorkspaceDeliveryMiddleware(config).after_agent(runtime.state, runtime)["messages"][-1]
+    status = final.additional_kwargs["my_assistant_workspace_delivery"]
+    assert [item["path"] for item in status["outputs"]] == ["/mnt/user-data/outputs/report.docx"]
+    assert status["files"] == []
+    assert "report.docx" in final.content
+    assert "/workspace apply" not in final.content
 
 
 def test_only_actual_write_back_records_can_claim_host_updated(scene):
@@ -145,7 +186,7 @@ def test_graph_corrects_the_final_verdict_of_a_misleading_model(scene, asynchron
     graph = create_agent(model=model, tools=[edit_file], middleware=[WorkspaceDeliveryMiddleware(config)])
     arguments = {"messages": [HumanMessage("修改 test.txt")]}
     result = asyncio.run(graph.ainvoke(arguments, context=runtime.context)) if asynchronous else graph.invoke(arguments, context=runtime.context)
-    assert "沙箱已修改，尚未写回本地" in result["messages"][-1].content
+    assert "沙箱副本已修改，尚未写回原工作区" in result["messages"][-1].content
     assert result["messages"][-1].additional_kwargs["my_assistant_workspace_delivery"]["files"][0]["status"] == "pending_apply"
     assert (workspace.root / "test.txt").read_text() == "original"
 

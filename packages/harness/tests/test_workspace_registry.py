@@ -360,6 +360,112 @@ def _ui_session(client):
 
 
 @pytest.mark.asyncio
+async def test_tui_opens_only_current_thread_delivery_files(catalog, ui_client, monkeypatch):
+    from my_assistant.tui.app import MyAssistantTUI, SelectScreen
+    from my_assistant.tui.cli import LaunchPlan
+
+    _, alpha, beta = catalog
+    thread = "outputs-review"
+    context = alpha.to_context()
+    ui_client.check_thread_workspace(thread, workspace=context, bind=True)
+    outputs = Path(alpha.ensure_runtime_dirs(thread)["outputs_path"])
+    report = outputs / "会议 纪要.docx"
+    report.write_bytes(b"report")
+    (outputs / ".env").write_text("private fixture")
+    (alpha.root / "original.docx").write_text("original")
+    assert ui_client.list_delivery_outputs(thread, context) == [{"path": report.name, "size": 6}]
+    with pytest.raises(PermissionError):
+        ui_client.resolve_delivery_output(thread, context, "../../../original.docx")
+    with pytest.raises(WorkspaceMismatch):
+        ui_client.resolve_delivery_output(thread, beta.to_context(), report.name)
+
+    opened = []
+    monkeypatch.setattr("my_assistant.tui.app.open_document", opened.append)
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id=thread, workspace_id=alpha.id))
+    async with app.run_test() as pilot:
+        app._handle_submit("/artifacts")
+        await pilot.pause()
+        assert isinstance(app.screen, SelectScreen)
+        await pilot.press("enter")
+        assert opened == [report]
+        report.unlink()
+        app._handle_submit(f'/artifacts "{report.name}"')
+        assert opened == [report]
+        assert "无法定位输出文件" in app.state.rows[-1].text
+
+
+@pytest.mark.asyncio
+async def test_tui_opens_comparison_with_exact_versions(catalog, ui_client, monkeypatch):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+    from my_assistant.tui.app import MyAssistantTUI
+    from my_assistant.tui.cli import LaunchPlan
+    from my_assistant.tui.review_screens import FileComparisonScreen
+
+    _, alpha, _ = catalog
+    thread = "file-compare"
+    name = "会议记录.md"
+    (alpha.root / name).write_bytes(b"old")
+    ui_client.check_thread_workspace(thread, workspace=alpha.to_context(), bind=True)
+    copy = prepare_workspace_copy(alpha, thread, "default")
+    (copy / name).write_bytes(b"new")
+    opened = []
+    monkeypatch.setattr("my_assistant.tui.review_screens.open_editor_diff", lambda *paths: opened.append(tuple(path.read_bytes() for path in paths)))
+
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id=thread, workspace_id=alpha.id))
+    async with app.run_test(size=(100, 28)) as pilot:
+        app._handle_submit(f'/workspace review "{name}"')
+        await pilot.pause()
+        assert isinstance(app.screen, FileComparisonScreen)
+        assert "-old\n+new" in app.screen.text
+        await pilot.click("#open-diff")
+        assert opened == [(b"old", b"new")]
+        await pilot.press("escape")
+        assert len(app.screen_stack) == 1
+        assert (alpha.root / name).read_bytes() == b"old"
+
+
+@pytest.mark.asyncio
+async def test_tui_batch_review_preserves_selection_through_comparison_and_writes_on_click(catalog, ui_client):
+    from my_assistant.sandbox.workspace_copy import prepare_workspace_copy
+    from my_assistant.tui.app import MyAssistantTUI
+    from my_assistant.tui.cli import LaunchPlan
+    from my_assistant.tui.review_screens import (
+        FileComparisonScreen,
+        WorkspaceReviewScreen,
+    )
+    from textual.widgets import Button, SelectionList
+
+    _, alpha, _ = catalog
+    thread = "batch-review"
+    ui_client.check_thread_workspace(thread, workspace=alpha.to_context(), bind=True)
+    copy = prepare_workspace_copy(alpha, thread, "default")
+    (copy / "a.md").write_text("deliver this")
+    (copy / "b.md").write_text("do not write this")
+    app = MyAssistantTUI(_ui_session(ui_client), LaunchPlan(mode="tui", thread_id=thread, workspace_id=alpha.id))
+    async with app.run_test(size=(100, 28)) as pilot:
+        app._handle_submit("/workspace review")
+        await pilot.pause()
+        assert isinstance(app.screen, WorkspaceReviewScreen)
+        selections = app.screen.query_one(SelectionList)
+        assert selections.selected == []
+        assert app.screen.query_one("#review-apply", Button).disabled
+        await pilot.press("space")
+        assert selections.selected == ["a.md"]
+        await pilot.click("#review-compare")
+        assert isinstance(app.screen, FileComparisonScreen)
+        assert app.screen.comparison.candidate.read_text() == "deliver this"
+        await pilot.press("escape")
+        assert selections.selected == ["a.md"]
+        assert not (alpha.root / "a.md").exists()
+
+        await pilot.click("#review-apply")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert (alpha.root / "a.md").read_text() == "deliver this"
+        assert not (alpha.root / "b.md").exists()
+
+
+@pytest.mark.asyncio
 async def test_tui_mismatch_shows_history_blocks_execution_and_returns(catalog, ui_client, monkeypatch):
     from my_assistant.tui.app import MyAssistantTUI
     from my_assistant.tui.cli import LaunchPlan

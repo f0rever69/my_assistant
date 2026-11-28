@@ -7,6 +7,7 @@ import os
 import sqlite3
 import stat
 import tempfile
+import time
 import uuid
 from contextlib import closing, contextmanager
 from itertools import islice
@@ -19,6 +20,7 @@ from my_assistant.sandbox.file_transactions import (
     FileTransactionConflict,
     FileTransactionStore,
     _atomic_write_bytes,
+    _fsync_directory,
     hash_bytes,
     staged_content_path,
     transaction_root,
@@ -133,6 +135,18 @@ def _walk(root: Path, workspace: Workspace | None = None):
             yield path
 
 
+def _publish_workspace_copy(stage: Path, destination: Path) -> None:
+    """Retry short-lived Windows locks while preserving atomic publication."""
+    for delay in (0.05, 0.1, 0.2, 0.4, None):
+        try:
+            stage.rename(destination)
+            return
+        except OSError as exc:
+            if delay is None or getattr(exc, "winerror", None) not in {5, 32, 33} or destination.exists():
+                raise
+            time.sleep(delay)
+
+
 def prepare_workspace_copy(workspace: Workspace, thread_id: str, user_id: str) -> Path:
     destination = _copy_root(workspace, thread_id, user_id)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +175,7 @@ def prepare_workspace_copy(workspace: Workspace, thread_id: str, user_id: str) -
                 copy.chmod(stat.S_IMODE(original.stat().st_mode) & 0o777)
                 baseline[relative.as_posix()] = hash_bytes(data)
             (stage / "baseline.json").write_text(json.dumps(baseline), encoding="utf-8")
-            stage.rename(destination)
+            _publish_workspace_copy(stage, destination)
     return destination / "files"
 
 
@@ -528,7 +542,10 @@ def workspace_copy_status(workspace: Workspace, thread_id: str, user_id: str) ->
                 status = "host_matches"
             else:
                 continue
-            files.append({"path": name, "status": status, "host_sha256": local, "sandbox_sha256": current})
+            files.append({
+                "path": name, "status": status, "host_sha256": local,
+                "sandbox_sha256": current, "baseline_sha256": before,
+            })
         return {"mode": "sandbox_workspace_copy", "files": files, "copy_exists": True}
 
 
@@ -541,16 +558,21 @@ def _conflict_review(workspace: Workspace, root: Path, relative: str, thread_id:
     staged = _copy_workspace(root)
     baseline = _refresh_baseline(root, workspace)
     host, sandbox = _refresh_content(workspace, relative), _refresh_content(staged, relative)
-    review = {
+    review = _review_versions(workspace, thread_id, user_id, {
         "path": relative, "host_sha256": _content_hash(host),
         "sandbox_sha256": _content_hash(sandbox), "baseline_sha256": baseline.get(relative),
-    }
+    })
+    return review, host, sandbox
+
+
+def _review_versions(workspace: Workspace, thread_id: str, user_id: str, versions: dict) -> dict:
+    review = {key: versions[key] for key in ("path", "host_sha256", "sandbox_sha256", "baseline_sha256")}
     identity = [workspace.to_context(), thread_id, user_id, review]
     review["resolution_token"] = hash_bytes(json.dumps(identity, sort_keys=True).encode())
     review["conflict"] = review["host_sha256"] != review["sandbox_sha256"] and all(
         review[key] != review["baseline_sha256"] for key in ("host_sha256", "sandbox_sha256")
     )
-    return review, host, sandbox
+    return review
 
 
 def review_workspace_conflict(workspace: Workspace, thread_id: str, user_id: str, relative: str) -> dict:
@@ -590,58 +612,68 @@ def resolve_workspace_conflict(
     locks = get_paths().base_dir / "workspace-write-locks"
     locks.mkdir(parents=True, exist_ok=True)
     with _copy_lock(locks / workspace.root_fingerprint), _copy_lock(root):
-        review, host, sandbox = _conflict_review(workspace, root, relative, thread_id, user_id)
-        if review["resolution_token"] != resolution_token:
-            raise FileTransactionConflict("A file or baseline changed since review; review the conflict again")
-        relative = review["path"]
-        target = workspace.check(relative, write=(choice == "sandbox"))
-        staged = _copy_workspace(root)
-        operation = uuid.uuid4().hex
-        backup = root / "conflict-backups" / operation
-        backup.mkdir(parents=True)
-        for label, data in (("local", host), ("sandbox", sandbox)):
-            if data is not None:
-                _atomic_write_bytes(backup / f"{label}.bin", data)
-        journal = {**review, "choice": choice, "state": "prepared"}
-        _atomic_write_bytes(backup / "resolution.json", json.dumps(journal).encode())
-        # Re-read after backups: never overwrite a newer version using an old token.
-        current, _, _ = _conflict_review(workspace, root, relative, thread_id, user_id)
-        if current["resolution_token"] != resolution_token:
-            raise FileTransactionConflict("A file changed while preparing resolution; review it again")
-        if choice == "local":
-            if host is None:
-                if sandbox is not None:
-                    staged.resolve(relative).unlink()
-            elif host != sandbox:
-                _write_refresh_file(staged, relative, host, review["sandbox_sha256"], stat.S_IMODE(target.stat().st_mode))
-            selected, status = host, "local_kept"
-        else:
-            if sandbox is None:
-                if host is not None:
-                    _check_refresh_versions(workspace, staged, relative, review["host_sha256"], None)
-                    workspace.check(relative, write=True).unlink()
-                status = "host_deleted"
-            else:
-                if host != sandbox:
-                    store = FileTransactionStore(transaction_root(thread_id, workspace=workspace), thread_id, workspace=workspace)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    transaction = store.prepare(
-                        operation_id=operation, tool_call_id=operation, tool_name="workspace_resolve",
-                        display_path=relative, target_path=str(target), pre_content=host,
-                        expected_content=sandbox, staged_path=str(staged_content_path(target, operation)),
-                    )
-                    if store.continue_prepared(transaction).status != APPLIED:
-                        raise FileTransactionConflict("Conflict resolution did not complete")
-                    store.commit(operation)
-                status = "host_updated"
-            selected = sandbox
-        digest = _content_hash(selected)
-        baseline = _refresh_baseline(root, workspace)
-        if digest is None:
-            baseline.pop(relative, None)
-        else:
-            baseline[relative] = digest
-        _atomic_write_bytes(root / "baseline.json", json.dumps(baseline).encode())
-        _record_sync(root, relative, digest, status)
-        _atomic_write_bytes(backup / "resolution.json", json.dumps({**journal, "state": "applied"}).encode())
-        return {"path": relative, "choice": choice, "status": status, "backup_path": str(backup), "sha256": digest}
+        return _apply_reviewed_version_locked(workspace, root, thread_id, user_id, relative, choice, resolution_token)
+
+
+def _apply_reviewed_version_locked(
+    workspace: Workspace, root: Path, thread_id: str, user_id: str, relative: str,
+    choice: str, resolution_token: str,
+    *, batch: bool = False,
+) -> dict:
+    """Apply one version while the caller holds the Workspace and copy locks."""
+    review, host, sandbox = _conflict_review(workspace, root, relative, thread_id, user_id)
+    if review["resolution_token"] != resolution_token:
+        raise FileTransactionConflict("A file or baseline changed since review; review the conflict again")
+    relative = review["path"]
+    target = workspace.check(relative, write=(choice == "sandbox"))
+    staged = _copy_workspace(root)
+    operation = uuid.uuid4().hex
+    backup = Workspace.from_path(root).resolve(Path("review-backups" if batch else "conflict-backups") / operation)
+    backup.mkdir(parents=True)
+    for label, data in (("local", host), ("sandbox", sandbox)):
+        if data is not None:
+            _atomic_write_bytes(backup / f"{label}.bin", data)
+    journal = {**review, "choice": choice, "state": "prepared"}
+    _atomic_write_bytes(backup / "resolution.json", json.dumps(journal).encode())
+    # Re-read after backups so a newer version cannot use the old review.
+    current, _, _ = _conflict_review(workspace, root, relative, thread_id, user_id)
+    if current["resolution_token"] != resolution_token:
+        raise FileTransactionConflict("A file changed while preparing resolution; review it again")
+    if choice == "local":
+        if host is None:
+            if sandbox is not None:
+                staged.resolve(relative).unlink()
+        elif host != sandbox:
+            _write_refresh_file(staged, relative, host, review["sandbox_sha256"], stat.S_IMODE(target.stat().st_mode))
+        selected, status = host, "local_kept"
+    elif sandbox is None:
+        if host is not None:
+            _check_refresh_versions(workspace, staged, relative, review["host_sha256"], None)
+            target = workspace.check(relative, write=True)
+            target.unlink()
+            _fsync_directory(target.parent)
+        selected, status = None, "host_deleted"
+    else:
+        if host != sandbox:
+            store = FileTransactionStore(transaction_root(thread_id, workspace=workspace), thread_id, workspace=workspace)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            transaction = store.prepare(
+                operation_id=operation, tool_call_id=operation,
+                tool_name="workspace_review" if batch else "workspace_resolve",
+                display_path=relative, target_path=str(target), pre_content=host,
+                expected_content=sandbox, staged_path=str(staged_content_path(target, operation)),
+            )
+            if store.continue_prepared(transaction).status != APPLIED:
+                raise FileTransactionConflict(f"Workspace write-back did not complete: {relative}")
+            store.commit(operation)
+        selected, status = sandbox, "host_updated"
+    digest = _content_hash(selected)
+    baseline = _refresh_baseline(root, workspace)
+    if digest is None:
+        baseline.pop(relative, None)
+    else:
+        baseline[relative] = digest
+    _atomic_write_bytes(root / "baseline.json", json.dumps(baseline).encode())
+    _record_sync(root, relative, digest, status)
+    _atomic_write_bytes(backup / "resolution.json", json.dumps({**journal, "state": "applied"}).encode())
+    return {"path": relative, "choice": choice, "status": status, "backup_path": str(backup), "sha256": digest}

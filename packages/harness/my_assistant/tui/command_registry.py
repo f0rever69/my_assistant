@@ -54,7 +54,7 @@ BUILTIN_COMMANDS: tuple[Command, ...] = (
     Command("mcp", "Show MCP server status"),
     Command("memory", "List, search, correct or forget long-term memories"),
     Command("uploads", "Show uploaded files for this thread"),
-    Command("artifacts", "Show generated artifacts"),
+    Command("artifacts", "Open local outputs: /artifacts [file]"),
     Command("details", "Toggle verbose activity rendering"),
     Command("usage", "Show token usage and context"),
     Command("config", "Show resolved config paths and overrides"),

@@ -27,7 +27,9 @@ from my_assistant.runtime.goal import parse_goal_command
 from .clipboard import copy_native_text
 from .command_registry import format_command_help
 from .input_history import InputHistory
+from .local_review import open_document
 from .render import render_header, render_progress, render_status, render_transcript
+from .review_screens import FileComparisonScreen, WorkspaceReviewScreen
 from .runtime import project_progress, stream_actions
 from .text_export import selectable_rich_text, transcript_text
 from .text_widgets import ConflictReviewScreen, CopyableStatic, TextViewScreen
@@ -51,6 +53,7 @@ _HELP_TEXT = (
     '/memory correct <fact-id> "replacement"\n'
     'Plan: /plan on|off|preview|show · /plan approve <version> · /accept [show|check|confirm]\n'
     'Workspace: /workspace refresh [--dry-run] · /workspace diff [path] · /workspace apply <path> <sha256>\n'
+    'Review: /artifacts [file] opens local outputs · /workspace review [path] reviews one file or a batch\n'
     'Conflicts: /workspace conflicts [path] opens version-choice dialog; reviewed tokens are carried automatically\n'
     f"{_HELP_KEYS}"
 )
@@ -336,7 +339,7 @@ class MyAssistantTUI(App):
 
     def check_action(self, action: str, parameters):
         if action == "interrupt" and (
-            isinstance(self.screen, TextViewScreen)
+            isinstance(self.screen, (TextViewScreen, WorkspaceReviewScreen))
             or getattr(self.screen, "selections", {})
             or isinstance(self.focused, Input) and self.focused.selected_text
         ):
@@ -551,11 +554,7 @@ class MyAssistantTUI(App):
         elif name == "uploads":
             self._show_uploads()
         elif name == "artifacts":
-            self._dispatch(
-                SystemMessage(
-                    "Artifacts appear inline as the agent writes them.", tone="info"
-                )
-            )
+            self._open_delivery_outputs(args)
         elif name == "details":
             self._dispatch(
                 SystemMessage(
@@ -564,6 +563,49 @@ class MyAssistantTUI(App):
             )
         else:
             self._dispatch(SystemMessage(f"/{name} is not available yet.", tone="info"))
+
+    def _open_delivery_outputs(self, args: str) -> None:
+        if self._streaming:
+            self._dispatch_still_working()
+            return
+        thread = self._conv_thread_id
+        workspace = copy.deepcopy(self._workspace_context)
+        if thread is None:
+            self._dispatch(SystemMessage("请先打开一个会话。"))
+            return
+        client = self.session.client
+
+        def open_output(name):
+            if name is None:
+                return
+            if self._streaming or thread != self._conv_thread_id or workspace != self._workspace_context:
+                self._dispatch(SystemMessage("会话状态已改变，请重新打开输出列表。", tone="error"))
+                return
+            try:
+                path = client.resolve_delivery_output(thread, workspace, name)
+            except (OSError, ValueError) as exc:
+                self._dispatch(SystemMessage(f"无法定位输出文件：{exc}", tone="error"))
+                return
+            try:
+                open_document(path)
+            except (OSError, ValueError) as exc:
+                self._dispatch(SystemMessage(f"{exc}\n文件路径：{path}", tone="error"))
+            else:
+                self._dispatch(SystemMessage(f"已请求打开本地输出文件：{path}"))
+
+        if args.strip():
+            open_output(args.strip().strip('"'))
+            return
+        try:
+            outputs = client.list_delivery_outputs(thread, workspace)
+        except (OSError, ValueError) as exc:
+            self._dispatch(SystemMessage(f"无法读取输出目录：{exc}", tone="error"))
+            return
+        if not outputs:
+            self._dispatch(SystemMessage("当前会话还没有本地输出文件。"))
+            return
+        options = [(item["path"], f"{item['path']} · {item['size']:,} 字节") for item in outputs]
+        self.push_screen(SelectScreen("选择要打开的本地输出文件", options), open_output)
 
     def _handle_file_writes(self, args: str) -> None:
         if self._streaming:
@@ -878,13 +920,17 @@ class MyAssistantTUI(App):
                 result = self.session.client.export_workspace_file(self._workspace_context, parts[1])
                 self._dispatch(SystemMessage("Explicit snapshot export:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 return
-            if action in {"diff", "apply", "refresh", "conflicts", "resolve"}:
+            if action in {"diff", "apply", "refresh", "conflicts", "resolve", "review"}:
                 if not self._workspace_context or not self._conv_thread_id:
                     raise ValueError("Open a Workspace thread before reviewing Docker changes")
                 client = self.session.client
                 thread = self._conv_thread_id
                 workspace = self._workspace_context
-                if action == "conflicts" and len(parts) == 1:
+                if action == "review" and len(parts) == 2:
+                    self.push_screen(FileComparisonScreen(client.compare_workspace_file(thread, workspace, parts[1])))
+                elif action == "review" and len(parts) == 1:
+                    self._open_batch_review(thread, copy.deepcopy(workspace))
+                elif action == "conflicts" and len(parts) == 1:
                     conflicts = client.list_workspace_conflicts(thread, workspace)
                     self._dispatch(SystemMessage(json.dumps(conflicts, ensure_ascii=False, indent=2) if conflicts else "No Workspace conflicts."))
                     if len(conflicts) == 1:
@@ -922,7 +968,7 @@ class MyAssistantTUI(App):
                     path = client.apply_workspace_copy(thread, workspace, parts[1], parts[2])
                     self._dispatch(SystemMessage(f"本地已更新（已审核写回）：{path}。"))
                 else:
-                    raise ValueError("Usage: /workspace refresh [--dry-run], diff [path], apply <path> <sha256>, conflicts [path], resolve <path> local|sandbox <token>")
+                    raise ValueError("Usage: /workspace review [path], refresh [--dry-run], diff [path], apply <path> <sha256>, conflicts [path], resolve <path> local|sandbox <token>")
                 return
             if action == "exports" and len(parts) == 1:
                 self._dispatch(SystemMessage(json.dumps(self.session.client.list_workspace_exports(), ensure_ascii=False, indent=2)))
@@ -940,9 +986,55 @@ class MyAssistantTUI(App):
                 self._dispatch(SystemMessage("Snapshot attached; tell the assistant to read this path. No live source access:\n" + json.dumps(result, ensure_ascii=False, indent=2)))
                 self._refresh_header()
                 return
-            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|refresh [--dry-run]|diff [path]|apply <path> <sha256>|conflicts [path]|resolve <path> local|sandbox <token>|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
+            self._dispatch(SystemMessage('Usage: /workspace [list|show|add <path> [name]|use <id|name|local>|return|policy <id> {JSON}|remove <id> confirm|migrate <id> confirm|review [path]|refresh [--dry-run]|diff [path]|apply <path> <sha256>|conflicts [path]|resolve <path> local|sandbox <token>|export <relative-path>|exports|reference <export-id>|forget-export <id> confirm]', tone="error"))
         except Exception as exc:  # noqa: BLE001 - registry/parse failures must not terminate TUI
             self._dispatch(SystemMessage(f"Workspace: {exc}", tone="error"))
+
+    def _open_batch_review(self, thread: str, workspace: dict) -> None:
+        client = self.session.client
+        changes = client.list_workspace_review(thread, workspace)
+        if not changes:
+            self._dispatch(SystemMessage("当前没有待审阅的沙箱变更。"))
+            return
+        task = client.get_task(thread).get("task") or {}
+        checks = (task.get("execution") or {}).get("checks") or []
+
+        def scope_is_current():
+            return not self._streaming and thread == self._conv_thread_id and workspace == self._workspace_context
+
+        def compare(change):
+            if not scope_is_current():
+                self.notify("会话状态已改变，请重新打开审阅。", severity="error")
+                return
+            try:
+                comparison = client.compare_workspace_file(thread, workspace, change.path, expected_token=change.token)
+            except Exception as exc:  # noqa: BLE001 - keep the chooser open on review errors
+                self.notify(str(exc), severity="error", timeout=5)
+                return
+            self.push_screen(FileComparisonScreen(comparison))
+
+        def apply_selection(selected):
+            if not selected:
+                return
+            if not scope_is_current():
+                self._dispatch(SystemMessage("会话状态已改变，请重新审阅。", tone="error"))
+                return
+            try:
+                result = client.apply_workspace_review(thread, workspace, selected)
+            except Exception as exc:  # noqa: BLE001 - preflight failures belong in the transcript
+                self._dispatch(SystemMessage(f"批量预检查未通过，未开始写回。\n{exc}", tone="error"))
+                return
+            lines = [f"原工作区已完成 {len(result['applied'])} 项变更。"]
+            for item in result["applied"]:
+                label = "已删除" if item["status"] == "host_deleted" else "已写回"
+                lines.append(f"- {item['path']} · {label} · 备份 {item['backup_path']}")
+            if result["error"]:
+                lines.append(f"{result['failed_path']} 写回中断，请重新核验该文件。\n{result['error']}")
+                if result["not_attempted"]:
+                    lines.append(f"尚未尝试其余 {len(result['not_attempted'])} 项。")
+            self._dispatch(SystemMessage("\n".join(lines), tone="error" if result["error"] else "info"))
+
+        self.push_screen(WorkspaceReviewScreen(changes, checks, compare), apply_selection)
 
     def _open_conflict_review(self, path: str, review: dict | None = None) -> None:
         import json

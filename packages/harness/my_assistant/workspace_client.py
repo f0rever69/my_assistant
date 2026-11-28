@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Mapping
 
 from my_assistant.config.workspace import Workspace
+from my_assistant.constants import TOOL_RESULTS_DIRNAME
 from my_assistant.runtime.checkpoint_state import (
     CheckpointStateAccessor,
     build_state_mutation_graph,
@@ -104,6 +105,34 @@ class WorkspaceClientMixin:
 
         return workspace_copy_diff(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id())
 
+    def _delivery_output_scope(self, thread_id, workspace):
+        from my_assistant.sandbox.output_files import output_scope
+
+        if workspace is None:
+            self.check_thread_workspace(thread_id)
+            parsed = None
+        else:
+            parsed = self._docker_workspace(thread_id, workspace)
+        return output_scope(parsed, thread_id, get_effective_user_id())
+
+    def _tool_results_dir(self) -> str:
+        config = getattr(self, "_app_config", None)
+        return getattr(getattr(config, "tool_output", None), "storage_subdir", TOOL_RESULTS_DIRNAME)
+
+    def list_delivery_outputs(self, thread_id, workspace=None) -> list[dict]:
+        from my_assistant.sandbox.output_files import list_output_files
+
+        try:
+            scope = self._delivery_output_scope(thread_id, workspace)
+        except FileNotFoundError:
+            return []
+        return list_output_files(scope, self._tool_results_dir())
+
+    def resolve_delivery_output(self, thread_id, workspace, name):
+        from my_assistant.sandbox.output_files import resolve_output_file
+
+        return resolve_output_file(self._delivery_output_scope(thread_id, workspace), name, self._tool_results_dir())
+
     def refresh_workspace_copy(self, thread_id: str, workspace: dict, *, dry_run: bool = False) -> dict:
         """Refresh an idle thread's Docker copy without writing the host Workspace."""
         from my_assistant.sandbox.workspace_copy import refresh_workspace_copy
@@ -117,6 +146,27 @@ class WorkspaceClientMixin:
         from my_assistant.sandbox.workspace_copy import review_workspace_copy
 
         return review_workspace_copy(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), path)
+
+    def compare_workspace_file(self, thread_id: str, workspace: dict, path: str, *, expected_token: str | None = None):
+        from my_assistant.sandbox.workspace_review import compare_workspace_file
+
+        return compare_workspace_file(
+            self._docker_workspace(thread_id, workspace), thread_id,
+            get_effective_user_id(), path, expected_token=expected_token,
+        )
+
+    def list_workspace_review(self, thread_id: str, workspace: dict):
+        from my_assistant.sandbox.workspace_review import list_workspace_review
+
+        return list_workspace_review(self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id())
+
+    def apply_workspace_review(self, thread_id: str, workspace: dict, selected: Mapping[str, str]) -> dict:
+        """Write versions explicitly selected through a trusted review surface."""
+        from my_assistant.sandbox.workspace_review import apply_workspace_review
+
+        return apply_workspace_review(
+            self._docker_workspace(thread_id, workspace), thread_id, get_effective_user_id(), selected,
+        )
 
     def apply_workspace_copy(self, thread_id: str, workspace: dict, path: str, sha256: str) -> str:
         from my_assistant.sandbox.workspace_copy import apply_workspace_copy

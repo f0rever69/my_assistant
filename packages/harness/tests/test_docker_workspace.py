@@ -386,9 +386,11 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
         )
         answer = capsys.readouterr().out
         assert "Docker CLI verified" in answer
-        assert "沙箱已修改，尚未写回本地" in answer
+        assert "原工作区尚无此文件" in answer
+        assert "本地输出文件（已核实存在，可直接打开）" in answer
         assert not (workspace.root / "docs" / "cli.txt").exists()
         output = workspace.runtime_dir(thread) / "outputs" / "cli.txt"
+        assert output.as_posix() in answer
         assert output.read_text(encoding="utf-8") == "output artifact"
         assert not provider._sandboxes
         assert not provider._warm_pool
@@ -406,9 +408,14 @@ def test_local_cli_uses_docker_workspace(workspace, monkeypatch, capsys):
                 thread, context, "docs/cli.txt"
             )
             assert "+cli result" in reviewed["diff"]
-            session.client.apply_workspace_copy(
-                thread, context, "docs/cli.txt", reviewed["sha256"]
-            )
+            assert session.client.resolve_delivery_output(thread, context, "cli.txt") == output
+            batch = session.client.list_workspace_review(thread, context)
+            assert [change.path for change in batch] == ["docs/cli.txt"]
+            compared = session.client.compare_workspace_file(thread, context, batch[0].path, expected_token=batch[0].token)
+            assert compared.original is None and compared.candidate.read_text(encoding="utf-8") == "cli result"
+            result = session.client.apply_workspace_review(thread, context, {batch[0].path: batch[0].token})
+            assert [item["status"] for item in result["applied"]] == ["host_updated"]
+            assert result["error"] is None
             assert (workspace.root / "docs" / "cli.txt").read_text(
                 encoding="utf-8"
             ) == "cli result"

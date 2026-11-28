@@ -72,6 +72,8 @@ TUI 中使用 `/workspace` 打开选择器，或使用下面的命令管理工�
 | `/workspace list` | 列出当前用户的注册表、可用状态、根路径和能力策略 |
 | `/workspace show` | 显示当前选中工作区的完整策略 |
 | `/workspace refresh [--dry-run]` | 预览或将本地变化同步到当前线程的 Docker 工作副本；冲突时整次拒绝刷新 |
+| `/artifacts [file]` | 打开当前会话的本地输出文件，省略文件名时弹出选择列表 |
+| `/workspace review [path]` | 对照指定文件的完整版本，省略路径时进入批量勾选和写回 |
 | `/workspace conflicts [path]` | 打开冲突审阅弹窗，直接选择保留本地或采用沙箱写回；多个冲突先选择文件 |
 | `/workspace resolve <path> local\|sandbox <token>` | 备份双方版本后选择保留本地或沙箱；令牌绑定文件版本及当前用户、线程和策略 |
 | `/workspace add <path> [name]` | 注册本地目录并切换到它；同一路径会复用稳定 ID |
@@ -112,11 +114,15 @@ TUI 中使用 `/workspace` 打开选择器，或使用下面的命令管理工�
 
 Python 嵌入式调用可使用 `client.refresh_workspace_copy(thread_id, workspace_context, dry_run=True)` 预览，以及 `client.refresh_workspace_copy(thread_id, workspace_context)` 执行。
 
-用 `/workspace diff` 查看变更列表，用 `/workspace diff <相对路径>` 查看文本差异和 SHA-256，然后用 `/workspace apply <相对路径> <SHA-256>` 将核对过的文件写回。写回检查权限、宿主文件原始版本和副本内容，事务状态可由现有文件恢复流程处理。删除会列在差异中，写回入口支持新增和修改。
+生成文档后，用 `/artifacts` 打开本地成品。修改现有长文档时，用 `/workspace review "相对路径"` 查看差异预览，并打开完整的原稿和候选稿副本。UTF-8 文本支持用已安装的 VS Code 打开并排对照。DOCX 可以预览段落文字，格式和批注可用 Word 的「审阅 → 比较」核对两份副本。写回始终以勾选时审核的沙箱版本为准。
+
+一次审阅多个文件时，运行 `/workspace review`，查看增删改清单及已记录的任务验收，选中文件后点「写回选中」。程序在第一笔写入前核对所有选中文件的原稿、候选稿和基线。冲突项需用 `/workspace conflicts` 单独处理。写回逐个完成，出现磁盘或并发错误时停止后续操作，并显示完成的文件和备份路径。删除项也会保存原文件备份。
+
+也可以用 `/workspace diff <相对路径>` 查看文本差异和 SHA-256，再用 `/workspace apply <相对路径> <SHA-256>` 单独写回新增或修改的文件。文件写回事务可通过现有文件恢复流程查看。
 
 文件工具回执会包含 `storage_scope`、`sync_status`、虚拟路径及对应本地路径：写入 Workspace 副本标为 `sandbox_workspace_copy / pending_apply`，本地直接文件操作标为 `host_workspace / host_updated`，共享输出目录单独标为 `host_outputs`。Shell 成功只表示命令执行成功，不证明本地原文件已更新。这些位置事实同时进入结构化工具回执。
 
-回答前，运行时会读取实际文件状态；结束后还会追加一条“文件同步状态（程序核验）”，明确显示沙箱待写回、双方冲突、本地已写回等结果。判定同时检查当前字节及写回记录，不把“内容碰巧相同”或模型自行声称完成当作写回证明。流式界面保留模型正文，并在其后显示独立核验结果；Python `chat()` 返回正文和核验说明。目录扫描暂不可用时会明确标注无法核验。
+回答结束后，“文件位置与写回状态（程序核验）”会分别列出已核实存在的本地输出文件，以及原工作区的待写回、冲突或已写回状态。本地输出路径可以直接打开；需要更新原工作区时才使用 `diff` 和 `apply`。原工作区的写回判定同时检查文件字节和写回记录。流式界面和 Python `chat()` 都保留模型正文和独立的核验结果。
 
 遇到冲突时，输入 `/workspace conflicts test.txt` 打开弹窗，查看双方差异及版本哈希，点击“保留本地”将本地版本同步到沙箱，或点击“采用沙箱写回”将沙箱版本写回本地。也可按 `L` / `S` 选择，按 `Esc` 取消；默认焦点为“取消”，直接回车不覆盖文件。程序自动携带本次审核的版本令牌，无需复制或手填。`/workspace conflicts` 在只有一个冲突时直接打开弹窗，多个冲突先选择文件；详情支持全选复制。
 

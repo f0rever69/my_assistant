@@ -97,7 +97,7 @@ token_usage:
 # is forced to produce a final answer immediately.
 token_budget:
   enabled: true                 # Set to true to activate budget enforcement
-  max_tokens: 150000            # Total token limit (input + output) per run
+  max_tokens: 500000            # Total token limit (input + output) per run
   max_input_tokens: null        # Optional separate input-only limit
   max_output_tokens: null       # Optional separate output-only limit
   warn_threshold: 0.75          # Warn at 75% of the budget
